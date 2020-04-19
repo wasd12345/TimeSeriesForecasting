@@ -23,7 +23,7 @@ from models.DummyMLP import DummyMLP
 
 #Tasks / problem applications
 #(defined in specific way with Dataset class to be used by DataLoader)
-import tasks.sinusoids_task as sinusoids_task
+import tasks.tsfake_task as tsfake_task
 import tasks.periodphase_task as periodphase_task
 #... other tasks
 
@@ -38,7 +38,7 @@ import tasks.periodphase_task as periodphase_task
 
 
 # Task params
-TASK = 'periodphase' #'sinusoids' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
+TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
 TRAINING_METRIC = torch.nn.MSELoss #'SMAPE' 'MAAPE'
 #!!!!!!!! HISTORY_PARAMS = {} #e.g. min,max of allowed range during training, then random sample          vs. fixed
 #!!!!!!!! HORIZON_PARAMS = {}
@@ -69,7 +69,7 @@ HORIZON_SIZES = [3,5,10]
 
 
 #!!!!! for now just use fixed size
-SEQ_LENGTH = 100 #HISTORY_SIZES[0] #can do for i for j loops over histories and horizons
+# SEQ_LENGTH = 100 #HISTORY_SIZES[0] #can do for i for j loops over histories and horizons
 #Some kinds of models implemented from papers can only train on a fixed HISTORY size, need to individually train different sizes (bad)
 #so for now, just use fixed 30 timestep history size as example
 
@@ -89,6 +89,7 @@ device = torch.device("cuda:0" if use_cuda else "cpu")
 
 # DataLoaders
 if TASK == 'periodphase':
+    SEQ_LENGTH = 100
     Y_COLNAME = 'period' #For this dataset, can predict period or phase
     TRAIN_PATH = os.path.join('data', 'periodphase', f'periodphase-1000-len-{SEQ_LENGTH}-train.csv') #!!!!!!!!!!!!!!!!!
     VAL_PATH = os.path.join('data', 'periodphase', f'periodphase-256-len-{SEQ_LENGTH}-val.csv')#!!!!!!!!!!!!!!!!!
@@ -97,22 +98,97 @@ if TASK == 'periodphase':
     val_set = periodphase_task.periodphaseDataset(VAL_PATH, SEQ_LENGTH, Y_COLNAME)
     val_dl = DataLoader(val_set, batch_size=BS_0__val)
     INPUT_SIZE = train_set.get_number_of_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
+
+
+
+
+elif TASK == 'tsfake':
+    TRAIN_PATH = os.path.join('data', 'tsfake', 'train.csv')#f'tsfake-1000-len-400-train.csv') #!!!!!!!!!!!!!!!!!
+    VAL_PATH = os.path.join('data', 'tsfake', 'val.csv')#f'tsfake-256-len-400-val.csv')#!!!!!!!!!!!!!!!!!
+    history_span = 10 #!!!!!should randomly vary over training
+    horizon_span = 7 #!!!!!rand
+    history_start = 2 #!!!!!!keeping in mind 0 indexing, so start=K means K+1 th timestep, i.e. it is legit to have start=0
+    train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
+    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True, num_workers=NUM_WORKERS)
+    val_set = tsfake_task.TSFakeDataset(VAL_PATH, 70, 15, 333)
+    val_dl = DataLoader(val_set, batch_size=BS_0__val)
+    INPUT_SIZE = train_set.get_number_of_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
+
 else:
     raise Exception(f'"{TASK}" TASK not implemented yet')
     #INPUT_SIZE = number of features for this task
 
 
-
-# if TASK == 'sinusoids':
-#     TRAIN_PATH = os.path.join('data', 'sinusoids', 'sinusoids-1000-len-100-train.txt') #!!!!!!!!!!!!!!!!!
-#     VAL_PATH = os.path.join('data', 'sinusoids', 'sinusoids-256-len-100-val.txt')#!!!!!!!!!!!!!!!!!
-#     train_set = sinusoids_task.SinusoidsDataset(TRAIN_PATH)
-#     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True, num_workers=NUM_WORKERS)
-#     val_set = sinusoids_task.SinusoidsDataset(VAL_PATH)
-#     val_dl = DataLoader(val_set, batch_size=BS_0__val)
-#     INPUT_SIZE = train_set.get_number_of_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
-
     
+
+
+
+
+
+
+
+print('\n'*5)
+history_span = 10 #!!!!!should randomly vary over training
+horizon_span = 7 #!!!!!rand
+history_start = 2
+train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
+train_set.print_attributes()
+print()
+train_dl = DataLoader(train_set, batch_size=400)#shuffle=True)
+for bb, sample in enumerate(train_dl):
+    print(f'training batch {bb}')
+    X = sample[0].float()
+    Y = sample[1].float()
+    
+    # Transfer to GPU, if available:
+    X, Y = X.to(device), Y.to(device)
+
+    print(X)
+    print(Y)
+    print(X.shape)
+    print(Y.shape)
+    print()
+
+
+print('\n'*5)
+history_span = 22 #!!!!!should randomly vary over training
+horizon_span = 17 #!!!!!rand
+history_start = 4
+train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
+train_set.print_attributes()
+print()
+train_dl = DataLoader(train_set, batch_size=400)#shuffle=True)
+for bb, sample in enumerate(train_dl):
+    print(f'training batch {bb}')
+    X = sample[0].float()
+    Y = sample[1].float()
+    
+    # Transfer to GPU, if available:
+    X, Y = X.to(device), Y.to(device)
+
+    print(X)
+    print(Y)
+    print(X.shape)
+    print(Y.shape)
+    print()
+
+
+
+
+
+
+
+
+
+c=cccccccccccbbbbbbbbbbbbbb
+
+
+
+
+
+
+
+
 
 
 
@@ -183,7 +259,7 @@ for epoch in range(MAX_EPOCHS):
     #scheduler.step()
 
     #Potentially change batchsize, other things, by reinitializing DataLoader:
-    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)  
+    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)
     #!!!!!!!!!! put log transform / box-cox etc. in Dataset transform method 
 
     for bb, sample in enumerate(train_dl):

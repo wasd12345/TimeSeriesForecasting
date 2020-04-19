@@ -99,8 +99,6 @@ class periodphaseDataset(Dataset):
         return self.size
 
     def __getitem__(self, idx):
-        #return self.data_set.iloc[idx]
-        #return self.data_set[idx]
         XY = self.data_set[idx]
         #For this simple scalar regression problem, last column is regressor Y:
         X = XY[:-1]

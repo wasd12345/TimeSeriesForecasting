@@ -30,6 +30,11 @@ def SMAPE(y_true, y_pred):
     
     
     
+def MAPE(y_true, y_pred):
+    """
+    """    
+    pass
+
     
 def MAAPE(y_true, y_pred):
     """
