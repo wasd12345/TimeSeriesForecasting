@@ -14,14 +14,14 @@ class DummyMLP(nn.Module):
     """
     Just dumb fixed sized concatenating MLP, as baseline
     """
-    def __init__(self, seq_length, input_size):
+    def __init__(self, history_span, input_size):
         super(DummyMLP, self).__init__()
         #Params
-        self.seq_length = seq_length #number of timesteps T i input [fixed value for this kind of attention]
+        self.history_span = history_span #number of timesteps T i input [fixed value for this kind of attention]
         self.input_size = input_size #dimension of each input vector (=number of features)
         #Layers
         self.MLP_block1 = nn.Sequential(
-            nn.Linear(self.seq_length*self.input_size, 50),
+            nn.Linear(self.history_span*self.input_size, 50),
             nn.ReLU(),
             nn.Linear(50, 10),
             nn.ReLU(),

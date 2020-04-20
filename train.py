@@ -1,9 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Apr 11 15:00:33 2020
-
-@author: GK
-"""
+# Main training and inference script for comparing time series forecasting models
 
 import os
 import time
@@ -89,13 +84,13 @@ device = torch.device("cuda:0" if use_cuda else "cpu")
 
 # DataLoaders
 if TASK == 'periodphase':
-    SEQ_LENGTH = 100
+    history_span = 100
     Y_COLNAME = 'period' #For this dataset, can predict period or phase
     TRAIN_PATH = os.path.join('data', 'periodphase', f'periodphase-1000-len-{SEQ_LENGTH}-train.csv') #!!!!!!!!!!!!!!!!!
     VAL_PATH = os.path.join('data', 'periodphase', f'periodphase-256-len-{SEQ_LENGTH}-val.csv')#!!!!!!!!!!!!!!!!!
-    train_set = periodphase_task.periodphaseDataset(TRAIN_PATH, SEQ_LENGTH, Y_COLNAME)
+    train_set = periodphase_task.periodphaseDataset(TRAIN_PATH, history_span, Y_COLNAME)
     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True, num_workers=NUM_WORKERS)
-    val_set = periodphase_task.periodphaseDataset(VAL_PATH, SEQ_LENGTH, Y_COLNAME)
+    val_set = periodphase_task.periodphaseDataset(VAL_PATH, history_span, Y_COLNAME)
     val_dl = DataLoader(val_set, batch_size=BS_0__val)
     INPUT_SIZE = train_set.get_number_of_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
 
@@ -105,12 +100,13 @@ if TASK == 'periodphase':
 elif TASK == 'tsfake':
     TRAIN_PATH = os.path.join('data', 'tsfake', 'train.csv')#f'tsfake-1000-len-400-train.csv') #!!!!!!!!!!!!!!!!!
     VAL_PATH = os.path.join('data', 'tsfake', 'val.csv')#f'tsfake-256-len-400-val.csv')#!!!!!!!!!!!!!!!!!
-    history_span = 10 #!!!!!should randomly vary over training
+    history_span = 66 #!!!!!should randomly vary over training
     horizon_span = 7 #!!!!!rand
     history_start = 2 #!!!!!!keeping in mind 0 indexing, so start=K means K+1 th timestep, i.e. it is legit to have start=0
     train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True, num_workers=NUM_WORKERS)
-    val_set = tsfake_task.TSFakeDataset(VAL_PATH, 70, 15, 333)
+    #val_set = tsfake_task.TSFakeDataset(VAL_PATH, 70, 15, 333)
+    val_set = tsfake_task.TSFakeDataset(VAL_PATH, 66, 7, 2) #!!!!!!!!!For now testing use same val sizes as training
     val_dl = DataLoader(val_set, batch_size=BS_0__val)
     INPUT_SIZE = train_set.get_number_of_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
 
@@ -121,80 +117,9 @@ else:
 
     
 
-
-
-
-
-
-
-print('\n'*5)
-history_span = 10 #!!!!!should randomly vary over training
-horizon_span = 7 #!!!!!rand
-history_start = 2
-train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
-train_set.print_attributes()
-print()
-train_dl = DataLoader(train_set, batch_size=400)#shuffle=True)
-for bb, sample in enumerate(train_dl):
-    print(f'training batch {bb}')
-    X = sample[0].float()
-    Y = sample[1].float()
-    
-    # Transfer to GPU, if available:
-    X, Y = X.to(device), Y.to(device)
-
-    print(X)
-    print(Y)
-    print(X.shape)
-    print(Y.shape)
-    print()
-
-
-print('\n'*5)
-history_span = 22 #!!!!!should randomly vary over training
-horizon_span = 17 #!!!!!rand
-history_start = 4
-train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
-train_set.print_attributes()
-print()
-train_dl = DataLoader(train_set, batch_size=400)#shuffle=True)
-for bb, sample in enumerate(train_dl):
-    print(f'training batch {bb}')
-    X = sample[0].float()
-    Y = sample[1].float()
-    
-    # Transfer to GPU, if available:
-    X, Y = X.to(device), Y.to(device)
-
-    print(X)
-    print(Y)
-    print(X.shape)
-    print(Y.shape)
-    print()
-
-
-
-
-
-
-
-
-
-c=cccccccccccbbbbbbbbbbbbbb
-
-
-
-
-
-
-
-
-
-
-
 #Model
 if MODEL == 'DummyMLP':
-    model = DummyMLP(SEQ_LENGTH, INPUT_SIZE)
+    model = DummyMLP(history_span, INPUT_SIZE)
 # elif MODEL == 'dsrnn':
 #     model = dsrnn(...)
 # elif MODEL == 'cinar': #!!!!!!!!!
@@ -203,6 +128,31 @@ if MODEL == 'DummyMLP':
 #     model = ddddddddd(...)
 else:
     raise Exception(f'"{MODEL}" MODEL not implemented yet')
+
+
+
+
+#!!!!!!!!!!!!!!!!!!!!
+#just make sure training and metrics work when switched over to forecasting task:
+import torch.nn as nn
+class test_sequential(nn.Module):
+    def __init__(self, history_span, horizon_span):
+        super(test_sequential, self).__init__()
+        self.history_span = history_span #test using fixed size input chunks
+        self.MLP_block1 = nn.Sequential(
+            nn.Linear(self.history_span, 50),
+            nn.ReLU(),
+            nn.Linear(50, 30),
+            nn.ReLU(),
+            nn.Linear(30, horizon_span)
+            )
+    def forward(self, x):
+        return self.MLP_block1(x)
+MODEL = 'test_sequential'
+model = test_sequential(history_span, horizon_span)    
+#!!!!!!!!!!!!!!!!!!!!!
+
+
 
 
 #Optimizer
@@ -234,7 +184,6 @@ logger = Logger(TASK, START_TIME)
 #...
 
 
-
 # =============================================================================
 # TRAINING LOOP
 # =============================================================================
@@ -259,7 +208,9 @@ for epoch in range(MAX_EPOCHS):
     #scheduler.step()
 
     #Potentially change batchsize, other things, by reinitializing DataLoader:
-    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)
+    #if also want to randomize over history and horizon sizes during training, then re-init Dataset each time
+    #train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
+    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)#, num_workers=NUM_WORKERS)
     #!!!!!!!!!! put log transform / box-cox etc. in Dataset transform method 
 
     for bb, sample in enumerate(train_dl):
@@ -269,8 +220,8 @@ for epoch in range(MAX_EPOCHS):
         
         # Transfer to GPU, if available:
         X, Y = X.to(device), Y.to(device)
-        # print(X.shape)
-        # print(Y.shape)        
+        print(X.shape)
+        print(Y.shape)        
         
         #Get basic descriptive stats on the batch INPUTS
         #(e.g. if want to do use this info to intentionally change input
@@ -281,6 +232,7 @@ for epoch in range(MAX_EPOCHS):
         # Run the forward and backward passes:
         opt.zero_grad()
         y_pred = model(X)
+        # print(y_pred)
         train_loss = criterion(y_pred, Y)
         print(f'training batch {bb}, train_loss: {train_loss.item()}')
         train_loss.backward()
@@ -361,3 +313,4 @@ for epoch in range(MAX_EPOCHS):
 
 
 print('finished training + validation')
+v=vvvvvvvvvvvvvvvvmmmmmmmmmm

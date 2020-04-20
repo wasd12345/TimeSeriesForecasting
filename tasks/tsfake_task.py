@@ -33,6 +33,8 @@ def create_dataset(
     
     TASKNAME = 'tsfake'
     
+    INSERT_NANS = False#True
+    
     data_dir = os.path.join('data',TASKNAME)
     
     if seed is not None:
@@ -67,16 +69,21 @@ def create_dataset(
             
             
             
-            #Simulate some missing data by randomly assigning NaNs to ~ 5pct of values:
-            P = .05
-            nan_inds = np.random.choice([0,1], data_len, replace=True, p=[1.-P,P])
-            x = [x[vv] if nan_inds[vv]==0 else np.nan for vv in range(len(x))]
+            # #Simulate some missing data by randomly assigning NaNs to ~ 5pct of values:
+            if INSERT_NANS:
+                P = .05
+                nan_inds = np.random.choice([0,1], data_len, replace=True, p=[1.-P,P])
+                x = [x[vv] if nan_inds[vv]==0 else np.nan for vv in range(len(x))]
+            
             X_all.append(x)
-        #Intentionally putin examples of leading and trailing missing data NaNs:
-        K1 = 10
-        K2 = 5
-        X_all[0][:K1] = [np.nan]*K1
-        X_all[1][-K2:] = [np.nan]*K2
+            
+        #Intentionally put in examples of leading and trailing missing data NaNs:
+        if INSERT_NANS:
+            K1 = 10
+            K2 = 5
+            X_all[0][:K1] = [np.nan]*K1
+            X_all[1][-K2:] = [np.nan]*K2
+            
         df = pd.DataFrame(data=X_all)
         out_path = os.path.join(data_dir, zz[0])
         df.to_csv(out_path, index=False, header=None)
