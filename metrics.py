@@ -1,9 +1,6 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Apr 11 16:12:42 2020
-
-@author: GK
-"""
+# TO DO:
+    # implement
+    # do as classes to match e.g. torch.nn.MSELoss structure
 
 
 import torch

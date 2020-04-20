@@ -31,10 +31,11 @@ import tasks.periodphase_task as periodphase_task
 # PARAMETERS
 # =============================================================================
 
-
 # Task params
 TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
-TRAINING_METRIC = torch.nn.MSELoss #'SMAPE' 'MAAPE'
+TRAINING_METRICS_TRACKED = [torch.nn.MSELoss] #'SMAPE' 'MAAPE' #List of metrics to track, one of which is actually optimized (OPTIMIZATION_FUNCTION)
+OPTIMIZATION_FUNCTION_IND = 0 #The actual function used for optimizing the parameters. Provide the index within the list TRAINING_METRICS_TRACKED
+VALIDATION_METRICS_TRACKED = [torch.nn.MSELoss] #!!!!!!!!!!!!In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
 #!!!!!!!! HISTORY_PARAMS = {} #e.g. min,max of allowed range during training, then random sample          vs. fixed
 #!!!!!!!! HORIZON_PARAMS = {}
 
@@ -86,8 +87,8 @@ device = torch.device("cuda:0" if use_cuda else "cpu")
 if TASK == 'periodphase':
     history_span = 100
     Y_COLNAME = 'period' #For this dataset, can predict period or phase
-    TRAIN_PATH = os.path.join('data', 'periodphase', f'periodphase-1000-len-{SEQ_LENGTH}-train.csv') #!!!!!!!!!!!!!!!!!
-    VAL_PATH = os.path.join('data', 'periodphase', f'periodphase-256-len-{SEQ_LENGTH}-val.csv')#!!!!!!!!!!!!!!!!!
+    TRAIN_PATH = os.path.join('data', 'periodphase', f'periodphase-1000-len-{history_span}-train.csv') #!!!!!!!!!!!!!!!!!
+    VAL_PATH = os.path.join('data', 'periodphase', f'periodphase-256-len-{history_span}-val.csv')#!!!!!!!!!!!!!!!!!
     train_set = periodphase_task.periodphaseDataset(TRAIN_PATH, history_span, Y_COLNAME)
     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True, num_workers=NUM_WORKERS)
     val_set = periodphase_task.periodphaseDataset(VAL_PATH, history_span, Y_COLNAME)
@@ -159,9 +160,10 @@ model = test_sequential(history_span, horizon_span)
 opt = torch.optim.Adam(model.parameters())
 #scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, ***)
 
-#Training Metric [metric which actually gets optimied]
-criterion = TRAINING_METRIC()
-
+#Training Metric [metric which actually gets optimized]
+optim_function = TRAINING_METRICS_TRACKED[OPTIMIZATION_FUNCTION_IND]()
+# train_criterion = TRAINING_METRICS_TRACKED()
+# val_criterion = VALIDATION_METRICS_TRACKED()
 
 
 START_TIME = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -170,8 +172,11 @@ summary_text = f'START_TIME = {START_TIME}\n' + \
     f'INPUT_SIZE (#features) = {INPUT_SIZE}\n' + \
     f'MODEL = {MODEL}\n' + \
     f'opt = {opt.__class__.__name__}\n' + \
-    f'criterion = {criterion}\n'
+    f'TRAINING_METRICS_TRACKED = {[of().__class__.__name__ for of in TRAINING_METRICS_TRACKED]}\n' + \
+    f'VALIDATION_METRICS_TRACKED = {[of().__class__.__name__ for of in VALIDATION_METRICS_TRACKED]}\n' + \
+    f'optim_function = {optim_function.__class__.__name__}\n'
 print(summary_text)
+
 
 #Init the logger to track things / plot things, do metalearning
 logger = Logger(TASK, START_TIME)
@@ -192,7 +197,7 @@ val_batchsize_this_epoch = BS_0__val
 for epoch in range(MAX_EPOCHS):
     print(f'------------- Starting epoch {epoch} -------------\n')
     
-    t0 = time.clock()
+    t0 = time.perf_counter()
     
     # Training
     print('Training...\n')
@@ -201,7 +206,6 @@ for epoch in range(MAX_EPOCHS):
 
     #Other per-batch training params:
     train_batchsize_this_epoch = BS_0__train #For now just use fixed batchsize but could adjust dynamically as necessary
-    logger.batchsizes['training'][epoch] = train_batchsize_this_epoch
     #...
     
     #Learning rate scheduler adjustment
@@ -222,6 +226,10 @@ for epoch in range(MAX_EPOCHS):
         X, Y = X.to(device), Y.to(device)
         print(X.shape)
         print(Y.shape)        
+
+        bsize = X.shape[0]
+        logger.n_exs_cumulative_per_batch += bsize #Do this per training batch, since potentially have variable batchsize
+        logger.batchsizes['training'].extend([bsize])
         
         #Get basic descriptive stats on the batch INPUTS
         #(e.g. if want to do use this info to intentionally change input
@@ -233,9 +241,16 @@ for epoch in range(MAX_EPOCHS):
         opt.zero_grad()
         y_pred = model(X)
         # print(y_pred)
-        train_loss = criterion(y_pred, Y)
-        print(f'training batch {bb}, train_loss: {train_loss.item()}')
-        train_loss.backward()
+        #!!!!!!!!!! for now just optimize on single loss function even when tracking multiple.
+        #could do as combined loss of the diff loss functions, or change dynamically during training [random, RL, meta, etc.]
+        for train_criterion in TRAINING_METRICS_TRACKED:
+            train_criterion = train_criterion()
+            train_loss = train_criterion(y_pred, Y)
+            print(f'training batch {bb}, {train_criterion.__class__.__name__}: {train_loss.item()}')
+            logger.losses_dict['training'][train_criterion.__class__.__name__].extend([train_loss.item()])
+            #If this is the single function that needs to be optimized
+            if train_criterion.__class__.__name__ == optim_function.__class__.__name__:
+                train_loss.backward()
         
         #Gradient clipping, etc.
         GRADIENT_CLIPPING = False#True
@@ -247,8 +262,11 @@ for epoch in range(MAX_EPOCHS):
         opt.step()
 
 
-    elapsed_train_time = time.clock() - t0
+    
+    elapsed_train_time = time.perf_counter() - t0
+    logger.n_exs_per_epoch += [logger.n_exs_cumulative_per_batch] #done at the epoch level
     print(f'elapsed_train_time = {elapsed_train_time}')
+
 
 
     # Validation
@@ -256,7 +274,6 @@ for epoch in range(MAX_EPOCHS):
     print('Validation...\n')
     model.eval()
     val_batchsize_this_epoch = BS_0__val #For now just use fixed batchsize but could adjust dynamically as necessary
-    logger.batchsizes['validation'][epoch] = val_batchsize_this_epoch
     
     #with torch.set_grad_enabled(False):
     with torch.no_grad():
@@ -268,16 +285,27 @@ for epoch in range(MAX_EPOCHS):
             Y = sample[1].float()
             X, Y = X.to(device), Y.to(device)
 
+            bsize = X.shape[0]
+            logger.batchsizes['validation'].extend([bsize])
+            logger.n_exs_cumulative_per_epoch.extend([logger.n_exs_per_epoch[-1]]) #To use for validation loss plots. Value is repeated for each validation batch.
+            
+            
             # Run the forward pass:
             y_pred = model(X)
-            val_loss = criterion(y_pred, Y)
-            print(f'validation batch {bb}, val_loss: {val_loss.item()}')
+            for val_criterion in VALIDATION_METRICS_TRACKED:
+                val_criterion = val_criterion()
+                val_loss = val_criterion(y_pred, Y)
+                print(f'validation batch {bb}, {val_criterion.__class__.__name__}: {val_loss.item()}')
+                logger.losses_dict['validation'][val_criterion.__class__.__name__].extend([val_loss.item()])     
+        
+        
+        
         
         #Print a few examples to compare
         # print(y_pred[:10])
         # print(Y[:10])
             
-    elapsed_val_time = time.clock() - elapsed_train_time
+    elapsed_val_time = time.perf_counter() - elapsed_train_time
     print(f'elapsed_val_time = {elapsed_val_time}')
 
     # Save model / optimizer checkpoints:
@@ -285,8 +313,9 @@ for epoch in range(MAX_EPOCHS):
         
     
     # Plot training/validation loss
-    #...
-    #logger.plot_losses(...)
+    # Right now this plots losses vs. num training examples which is appended per batch.
+    # So could run this after each batch but may as well just do at end of each epoch
+    logger.plot_metrics()
     
     
     # Weight / bias stats
@@ -306,11 +335,10 @@ for epoch in range(MAX_EPOCHS):
     
     
     logger.n_epochs_completed += 1
-    train_and_val_time = time.clock() - t0
+    train_and_val_time = time.perf_counter() - t0
     logger.epoch_time.extend([train_and_val_time])
     print(f'time this epoch = {train_and_val_time}')
     print(f'------------- Finished epoch {epoch} -------------\n\n\n\n\n\n\n\n\n\n')
 
 
 print('finished training + validation')
-v=vvvvvvvvvvvvvvvvmmmmmmmmmm
