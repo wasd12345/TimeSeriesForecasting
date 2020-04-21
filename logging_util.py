@@ -32,7 +32,7 @@ class Logger():
         self.gradient_magnitudes = {}
         self.gradient_angles = {}
         
-        self.output_dir = os.path.join('output', self.start_time)
+        self.output_dir = os.path.join('output', f'{self.start_time}__{self.task_name}')
         os.makedirs(self.output_dir)
         
         

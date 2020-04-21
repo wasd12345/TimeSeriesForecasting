@@ -4,10 +4,11 @@ import os
 import time
 from datetime import datetime
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 #Other evaluation metrics
-from metrics import SMAPE, MAAPE
+from metrics import SMAPE, MAPE, bias
 
 #Logging / tracker class
 from logging_util import Logger
@@ -33,9 +34,9 @@ import tasks.periodphase_task as periodphase_task
 
 # Task params
 TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
-TRAINING_METRICS_TRACKED = [torch.nn.MSELoss] #'SMAPE' 'MAAPE' #List of metrics to track, one of which is actually optimized (OPTIMIZATION_FUNCTION)
+TRAINING_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias] #'SMAPE' 'MAAPE' #List of metrics to track, one of which is actually optimized (OPTIMIZATION_FUNCTION)
 OPTIMIZATION_FUNCTION_IND = 0 #The actual function used for optimizing the parameters. Provide the index within the list TRAINING_METRICS_TRACKED
-VALIDATION_METRICS_TRACKED = [torch.nn.MSELoss] #!!!!!!!!!!!!In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
+VALIDATION_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias] #!!!!!!!!!!!!In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
 #!!!!!!!! HISTORY_PARAMS = {} #e.g. min,max of allowed range during training, then random sample          vs. fixed
 #!!!!!!!! HORIZON_PARAMS = {}
 
@@ -161,7 +162,7 @@ opt = torch.optim.Adam(model.parameters())
 #scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, ***)
 
 #Training Metric [metric which actually gets optimized]
-optim_function = TRAINING_METRICS_TRACKED[OPTIMIZATION_FUNCTION_IND]()
+optim_function = TRAINING_METRICS_TRACKED[OPTIMIZATION_FUNCTION_IND]
 # train_criterion = TRAINING_METRICS_TRACKED()
 # val_criterion = VALIDATION_METRICS_TRACKED()
 
@@ -172,8 +173,8 @@ summary_text = f'START_TIME = {START_TIME}\n' + \
     f'INPUT_SIZE (#features) = {INPUT_SIZE}\n' + \
     f'MODEL = {MODEL}\n' + \
     f'opt = {opt.__class__.__name__}\n' + \
-    f'TRAINING_METRICS_TRACKED = {[of().__class__.__name__ for of in TRAINING_METRICS_TRACKED]}\n' + \
-    f'VALIDATION_METRICS_TRACKED = {[of().__class__.__name__ for of in VALIDATION_METRICS_TRACKED]}\n' + \
+    f'TRAINING_METRICS_TRACKED = {[of.__name__ for of in TRAINING_METRICS_TRACKED]}\n' + \
+    f'VALIDATION_METRICS_TRACKED = {[of.__name__ for of in VALIDATION_METRICS_TRACKED]}\n' + \
     f'optim_function = {optim_function.__class__.__name__}\n'
 print(summary_text)
 
@@ -244,14 +245,14 @@ for epoch in range(MAX_EPOCHS):
         #!!!!!!!!!! for now just optimize on single loss function even when tracking multiple.
         #could do as combined loss of the diff loss functions, or change dynamically during training [random, RL, meta, etc.]
         for train_criterion in TRAINING_METRICS_TRACKED:
-            train_criterion = train_criterion()
             train_loss = train_criterion(y_pred, Y)
-            print(f'training batch {bb}, {train_criterion.__class__.__name__}: {train_loss.item()}')
-            logger.losses_dict['training'][train_criterion.__class__.__name__].extend([train_loss.item()])
+            print(f'training batch {bb}, {train_criterion.__name__}: {train_loss.item()}')
+            logger.losses_dict['training'][train_criterion.__name__].extend([train_loss.item()])
             #If this is the single function that needs to be optimized
-            if train_criterion.__class__.__name__ == optim_function.__class__.__name__:
+            if train_criterion.__name__ == optim_function.__name__:
+                # print('loss is train_criterion.__name__, so backward-----------')
                 train_loss.backward()
-        
+                
         #Gradient clipping, etc.
         GRADIENT_CLIPPING = False#True
         if GRADIENT_CLIPPING:
@@ -293,12 +294,9 @@ for epoch in range(MAX_EPOCHS):
             # Run the forward pass:
             y_pred = model(X)
             for val_criterion in VALIDATION_METRICS_TRACKED:
-                val_criterion = val_criterion()
                 val_loss = val_criterion(y_pred, Y)
-                print(f'validation batch {bb}, {val_criterion.__class__.__name__}: {val_loss.item()}')
-                logger.losses_dict['validation'][val_criterion.__class__.__name__].extend([val_loss.item()])     
-        
-        
+                print(f'validation batch {bb}, {val_criterion.__name__}: {val_loss.item()}')
+                logger.losses_dict['validation'][val_criterion.__name__].extend([val_loss.item()])     
         
         
         #Print a few examples to compare
