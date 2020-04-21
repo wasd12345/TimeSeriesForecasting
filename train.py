@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from metrics import SMAPE, MAPE, bias
 
 #Logging / tracker class
-from logging_util import Logger
+from utils import Logger, plot_regression_scatterplot, plot_predictions
 
 #Pytorch models
 from models.DummyMLP import DummyMLP
@@ -49,7 +49,7 @@ MODEL = 'DummyMLP' #'dsrnn' #or try all models, to do direct comparison      MOD
 
 
 # Training params
-MAX_EPOCHS = 19
+MAX_EPOCHS = 89
 #!!!!!!!! EARLY_STOPPING = False
 # BATCHSIZE_SCHEDULE = ppppppp #how to adjust batchszie with training, e.g. random btwn min max,    vs.    decreasing batchsizes, etc.
 BS_0__train = 200 #Initial training batchsize (since batchsize may vary)
@@ -100,16 +100,16 @@ if TASK == 'periodphase':
 
 
 elif TASK == 'tsfake':
-    TRAIN_PATH = os.path.join('data', 'tsfake', 'train.csv')#f'tsfake-1000-len-400-train.csv') #!!!!!!!!!!!!!!!!!
-    VAL_PATH = os.path.join('data', 'tsfake', 'val.csv')#f'tsfake-256-len-400-val.csv')#!!!!!!!!!!!!!!!!!
+    TRAIN_PATH = os.path.join('data', 'tsfake', 'train_sinusoid_noisy.csv')#f'tsfake-1000-len-400-train.csv') #!!!!!!!!!!!!!!!!!
+    VAL_PATH = os.path.join('data', 'tsfake', 'val_sinusoid_noisy.csv')#f'tsfake-256-len-400-val.csv')#!!!!!!!!!!!!!!!!!
     history_span = 66 #!!!!!should randomly vary over training
-    horizon_span = 7 #!!!!!rand
+    horizon_span = 14 #!!!!!rand
     history_start = 2 #!!!!!!keeping in mind 0 indexing, so start=K means K+1 th timestep, i.e. it is legit to have start=0
     train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True, num_workers=NUM_WORKERS)
     #val_set = tsfake_task.TSFakeDataset(VAL_PATH, 70, 15, 333)
-    val_set = tsfake_task.TSFakeDataset(VAL_PATH, 66, 7, 2) #!!!!!!!!!For now testing use same val sizes as training
-    val_dl = DataLoader(val_set, batch_size=BS_0__val)
+    val_set = tsfake_task.TSFakeDataset(VAL_PATH, 66, 14, 4) #!!!!!!!!!For now testing use same val sizes as training, since testing using fixed size dummy MLP needs always same dims as training
+    val_dl = DataLoader(val_set, batch_size=BS_0__val, shuffle=True)
     INPUT_SIZE = train_set.get_number_of_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
 
 else:
@@ -299,9 +299,15 @@ for epoch in range(MAX_EPOCHS):
                 logger.losses_dict['validation'][val_criterion.__name__].extend([val_loss.item()])     
         
         
-        #Print a few examples to compare
-        # print(y_pred[:10])
-        # print(Y[:10])
+            #Print a few examples to compare
+            plot_regression_scatterplot(y_pred.view(-1), Y.view(-1), logger.output_dir, logger.n_epochs_completed)
+            
+            #Plot ONE randomly chosen time series. History, and prediction along with ground truth future:
+            INDEX = torch.randint(0,X.shape[0],[1],dtype=int).item()
+            plot_predictions(X[INDEX], Y[INDEX], y_pred[INDEX], logger.output_dir, logger.n_epochs_completed)
+            # print(y_pred[:10])
+            # print(Y[:10])
+            
             
     elapsed_val_time = time.perf_counter() - elapsed_train_time
     print(f'elapsed_val_time = {elapsed_val_time}')

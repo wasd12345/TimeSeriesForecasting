@@ -32,7 +32,7 @@ def create_dataset(
     """
     
     TASKNAME = 'tsfake'
-    
+    MODE = 'sinusoid' #'ramp'
     INSERT_NANS = False#True
     
     data_dir = os.path.join('data',TASKNAME)
@@ -57,17 +57,17 @@ def create_dataset(
         print('Creating data set for {}...'.format(zz[0]))
         X_all = []
         for i in trange(zz[1]):
-            period = torch.rand(1).item()
-            phase = np.pi*torch.rand(1).item() #Only [0,pi] phases so well defined with only 1 possible offset 
-            x = torch.linspace(0., x_max, data_len)
-            x = torch.sin(2.*np.pi*x/period + phase).tolist()
             
-            
-            #!!!!!!!!!
-            #for debugging simplicity during dev, just do monotonic integer seqs:
-            x = [i for i in range(data_len)]
-            
-            
+            if MODE == 'sinusoid':
+                period = torch.rand(1).item()
+                phase = np.pi*torch.rand(1).item() #Only [0,pi] phases so well defined with only 1 possible offset 
+                x = torch.linspace(0., x_max, data_len)
+                x = torch.sin(2.*np.pi*x/period + phase)
+                x += .05*torch.randn(x.shape[0])
+                x = x.tolist()
+            elif MODE == 'ramp':
+                #for debugging simplicity during dev, just do monotonic integer seqs:
+                x = [i for i in range(data_len)]
             
             # #Simulate some missing data by randomly assigning NaNs to ~ 5pct of values:
             if INSERT_NANS:
@@ -85,7 +85,7 @@ def create_dataset(
             X_all[1][-K2:] = [np.nan]*K2
             
         df = pd.DataFrame(data=X_all)
-        out_path = os.path.join(data_dir, zz[0])
+        out_path = os.path.join(data_dir, f'{MODE}_' + zz[0])
         df.to_csv(out_path, index=False, header=None)
 
     print(train_path)

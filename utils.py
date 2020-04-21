@@ -9,6 +9,9 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
+import torch
+from scipy.stats import pearsonr
+
 
 class Logger():
     """
@@ -95,3 +98,51 @@ class Logger():
         Plot histograms etc. of gradient magntudes, anngles as functions of epoch
         """
         pass       
+    
+    
+    
+def plot_predictions(x_history, y_true, y_pred, output_dir, epoch):
+    """
+    Visualize predictions
+    
+    **for now assuming univariate
+    """
+    x = torch.arange(x_history.numel() + y_true.numel())
+    hist_end = x_history.numel()
+    
+    plt.figure()
+    plt.title(f'Predictions at epoch {epoch}', fontsize=20)
+    plt.plot(x[:hist_end], x_history, marker='o', color='k', linestyle='-', label='history')
+    plt.plot(x[hist_end:], y_true, marker='o', color='b', linestyle='-', label='y_true')
+    plt.plot([hist_end-1, hist_end], [x_history[-1], y_true[0]], marker='None', color='k', linestyle='-')
+    plt.plot(x[hist_end:], y_pred, marker='x', color='r', linestyle='--', label='y_pred')
+    plt.xlabel('Timestep', fontsize=20)
+    plt.ylabel('Y', fontsize=20)
+    plt.legend(numpoints=1)
+    savepath = os.path.join(output_dir, f'predictions__epoch{epoch}__random.png') #just for single random time series
+    plt.savefig(savepath)
+    plt.close()
+
+
+    
+def plot_regression_scatterplot(pred, true, output_dir, epoch):
+    """
+    Flattened over all timesteps in entire batch
+    """
+    r, p_val = pearsonr(true,pred)
+    n_dec = 4
+    r_rounded = round(r, n_dec)
+    p_rounded = round(p_val, n_dec)
+    plt.figure()
+    plt.title(f'Scatterplot at epoch {epoch}\nr={r_rounded}, p-val={p_rounded}', fontsize=16)
+    plt.plot(true, pred, marker='o', color='b', linestyle='None')
+    plt.xlabel('True', fontsize=20)
+    plt.ylabel('Predicted', fontsize=20)
+    
+    minval = torch.min( torch.min(true), torch.min(pred) )
+    maxval = torch.max( torch.max(true), torch.max(pred) )
+    plt.plot([minval, maxval], [minval, maxval], linestyle='--', color='k')
+    
+    savepath = os.path.join(output_dir, f'scatterplot__epoch{epoch}.png')
+    plt.savefig(savepath)
+    plt.close()
