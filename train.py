@@ -8,7 +8,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 #Other evaluation metrics
-from metrics import SMAPE, MAPE, bias
+from metrics import SMAPE, MAPE, bias, pearson_r, mutual_information
+
 
 #Logging / tracker class
 from utils import Logger, plot_regression_scatterplot, plot_predictions
@@ -28,15 +29,16 @@ import tasks.periodphase_task as periodphase_task
 
 
 
+
 # =============================================================================
 # PARAMETERS
 # =============================================================================
 
 # Task params
 TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
-TRAINING_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias] #'SMAPE' 'MAAPE' #List of metrics to track, one of which is actually optimized (OPTIMIZATION_FUNCTION)
+TRAINING_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_information] #'SMAPE' 'MAAPE' #List of metrics to track, one of which is actually optimized (OPTIMIZATION_FUNCTION)
 OPTIMIZATION_FUNCTION_IND = 0 #The actual function used for optimizing the parameters. Provide the index within the list TRAINING_METRICS_TRACKED
-VALIDATION_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias] #!!!!!!!!!!!!In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
+VALIDATION_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_information] #!!!!!!!!!!!!In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
 #!!!!!!!! HISTORY_PARAMS = {} #e.g. min,max of allowed range during training, then random sample          vs. fixed
 #!!!!!!!! HORIZON_PARAMS = {}
 
@@ -46,11 +48,24 @@ MODEL = 'DummyMLP' #'dsrnn' #or try all models, to do direct comparison      MOD
 #!!!!!!! vs. MODEL_LIST = ['dsrnn', 'Cho',...] and then track stats for each model, at same time, using individual optimizers but exact same training / val batches
 #!!!!!!! ENSEMBLE_N_MODELS = 1 #Number of models to average together in bagged ensemble
 #!!!!!!! ENSEMBLE_N_CHECKPOINTS = 1 #Number of checkpoints over which to do weight averaging [EMA weighting]
+#!!!!!!! QUANTILES_LIST = [.05, .25, .45, .5, .55, .75, .95] #Which quantiles for which to predict vals
+
+
+# Pre-processing optionss
+NORMALIZATION = 'once' #'windowed' #how to do normalization: one-time, or in a moving sliding window for each chunk of input
+# BOX_COX - standard 1var Box-Cox power transform
+# DESEASONED - 
+# LEARNED - learn the parameters of the transform via backprop
+# META - learn the params via metalearning
+
 
 
 # Training params
 MAX_EPOCHS = 89
-#!!!!!!!! EARLY_STOPPING = False
+EARLY_STOPPING_K = 3 #None #If None, don't use early stopping. If int, stop if validation loss in at least one of the most recent K epochs is not less than the K-1th last epoch
+#!!!!!!!!!!!! for now assuming the loss metric is the one being optimized
+
+
 # BATCHSIZE_SCHEDULE = ppppppp #how to adjust batchszie with training, e.g. random btwn min max,    vs.    decreasing batchsizes, etc.
 BS_0__train = 200 #Initial training batchsize (since batchsize may vary)
 BS_0__val = 70 #Initial validation batchsize
@@ -241,18 +256,19 @@ for epoch in range(MAX_EPOCHS):
         # Run the forward and backward passes:
         opt.zero_grad()
         y_pred = model(X)
-        # print(y_pred)
         #!!!!!!!!!! for now just optimize on single loss function even when tracking multiple.
         #could do as combined loss of the diff loss functions, or change dynamically during training [random, RL, meta, etc.]
         for train_criterion in TRAINING_METRICS_TRACKED:
+            
             train_loss = train_criterion(y_pred, Y)
-            print(f'training batch {bb}, {train_criterion.__name__}: {train_loss.item()}')
             logger.losses_dict['training'][train_criterion.__name__].extend([train_loss.item()])
+            print(f'training batch {bb}, {train_criterion.__name__}: {train_loss.item()}')
+            
             #If this is the single function that needs to be optimized
             if train_criterion.__name__ == optim_function.__name__:
-                # print('loss is train_criterion.__name__, so backward-----------')
                 train_loss.backward()
                 
+        
         #Gradient clipping, etc.
         GRADIENT_CLIPPING = False#True
         if GRADIENT_CLIPPING:
@@ -307,6 +323,12 @@ for epoch in range(MAX_EPOCHS):
             plot_predictions(X[INDEX], Y[INDEX], y_pred[INDEX], logger.output_dir, logger.n_epochs_completed)
             # print(y_pred[:10])
             # print(Y[:10])
+            
+            #other example metrics like r^2 or mutual information:
+            # r, p_val = pearsonr(Y.view(-1), y_pred.view(-1))
+            # print(r, p_val)
+            
+            
             
             
     elapsed_val_time = time.perf_counter() - elapsed_train_time
