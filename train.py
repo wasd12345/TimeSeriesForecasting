@@ -16,6 +16,7 @@ from utils import Logger, plot_regression_scatterplot, plot_predictions
 
 #Pytorch models
 from models.DummyMLP import DummyMLP
+import models.RecurrentEncoderDecoder as RecEncDec
 # from models.DSRNN import sssssssss
 
 #Tasks / problem applications
@@ -44,7 +45,7 @@ VALIDATION_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_i
 
 
 # Model params
-MODEL = 'DummyMLP' #'dsrnn' #or try all models, to do direct comparison      MODEL_LIST = ...
+MODEL = 'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models, to do direct comparison      MODEL_LIST = ...
 #!!!!!!! vs. MODEL_LIST = ['dsrnn', 'Cho',...] and then track stats for each model, at same time, using individual optimizers but exact same training / val batches
 #!!!!!!! ENSEMBLE_N_MODELS = 1 #Number of models to average together in bagged ensemble
 #!!!!!!! ENSEMBLE_N_CHECKPOINTS = 1 #Number of checkpoints over which to do weight averaging [EMA weighting]
@@ -134,9 +135,17 @@ else:
 
     
 
-#Model
+#Model (for now assuming you must choose a single model) !!!!!!!!
 if MODEL == 'DummyMLP':
     model = DummyMLP(history_span, INPUT_SIZE)
+elif MODEL == 'RecurrentEncoderDecoder':
+    N_LAYERS = 2
+    D_HIDDEN = 32
+    D_OUTPUT = 1 #Since right now just test with univariate regression
+    enc = RecEncDec.Encoder(INPUT_SIZE, D_HIDDEN, N_LAYERS)
+    dec = RecEncDec.Decoder(D_OUTPUT, INPUT_SIZE, D_HIDDEN, N_LAYERS)
+    model = RecEncDec.RecurrentEncoderDecoder(enc, dec, horizon_span).to(device)    
+    
 # elif MODEL == 'dsrnn':
 #     model = dsrnn(...)
 # elif MODEL == 'cinar': #!!!!!!!!!
@@ -149,30 +158,31 @@ else:
 
 
 
-#!!!!!!!!!!!!!!!!!!!!
-#just make sure training and metrics work when switched over to forecasting task:
-import torch.nn as nn
-class test_sequential(nn.Module):
-    def __init__(self, history_span, horizon_span):
-        super(test_sequential, self).__init__()
-        self.history_span = history_span #test using fixed size input chunks
-        self.MLP_block1 = nn.Sequential(
-            nn.Linear(self.history_span, 50),
-            nn.ReLU(),
-            nn.Linear(50, 30),
-            nn.ReLU(),
-            nn.Linear(30, horizon_span)
-            )
-    def forward(self, x):
-        return self.MLP_block1(x)
-MODEL = 'test_sequential'
-model = test_sequential(history_span, horizon_span)    
-#!!!!!!!!!!!!!!!!!!!!!
+# #!!!!!!!!!!!!!!!!!!!!
+# #just make sure training and metrics work when switched over to forecasting task:
+# import torch.nn as nn
+# class test_sequential(nn.Module):
+#     def __init__(self, history_span, horizon_span):
+#         super(test_sequential, self).__init__()
+#         self.history_span = history_span #test using fixed size input chunks
+#         self.MLP_block1 = nn.Sequential(
+#             nn.Linear(self.history_span, 50),
+#             nn.ReLU(),
+#             nn.Linear(50, 30),
+#             nn.ReLU(),
+#             nn.Linear(30, horizon_span)
+#             )
+#     def forward(self, x):
+#         return self.MLP_block1(x)
+# MODEL = 'test_sequential'
+# model = test_sequential(history_span, horizon_span)    
+# #!!!!!!!!!!!!!!!!!!!!!
 
 
 
 
 #Optimizer
+# Assuming use same optimizer for all parameters:
 opt = torch.optim.Adam(model.parameters())
 #scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, ***)
 
@@ -240,6 +250,12 @@ for epoch in range(MAX_EPOCHS):
         
         # Transfer to GPU, if available:
         X, Y = X.to(device), Y.to(device)
+        
+        #!!!!!!!!!!! for now without changing the datasets themselves, since univariate, unsqueeze to be multivariate but with feature dim 1, to generalize:
+        #and use unsqueeze dim is 2 so that shape is LSTM format:
+        # batch x length x features
+        X = torch.unsqueeze(X, 2)
+        Y = torch.unsqueeze(Y, 2)
         print(X.shape)
         print(Y.shape)        
 
@@ -255,7 +271,12 @@ for epoch in range(MAX_EPOCHS):
         
         # Run the forward and backward passes:
         opt.zero_grad()
-        y_pred = model(X)
+        #y_pred = model(X) #For models like DummyMLP which do direct forecast, i.e. don't rely on recurrent decoder predictions, so don't need Y vals:
+        # vs. for recurrent deocders, which may use teacher forcing.
+        #If don't need teacher forcing(not implemented yet anyway), then can ignore Y
+        y_pred = model(X, Y)
+        
+        
         #!!!!!!!!!! for now just optimize on single loss function even when tracking multiple.
         #could do as combined loss of the diff loss functions, or change dynamically during training [random, RL, meta, etc.]
         for train_criterion in TRAINING_METRICS_TRACKED:
@@ -277,7 +298,6 @@ for epoch in range(MAX_EPOCHS):
             torch.nn.utils.clip_grad_value_(model.parameters(), 10.)
         
         opt.step()
-
 
     
     elapsed_train_time = time.perf_counter() - t0
@@ -301,6 +321,9 @@ for epoch in range(MAX_EPOCHS):
             X = sample[0].float()
             Y = sample[1].float()
             X, Y = X.to(device), Y.to(device)
+            X = torch.unsqueeze(X, 2)
+            Y = torch.unsqueeze(Y, 2)
+
 
             bsize = X.shape[0]
             logger.batchsizes['validation'].extend([bsize])
@@ -308,7 +331,7 @@ for epoch in range(MAX_EPOCHS):
             
             
             # Run the forward pass:
-            y_pred = model(X)
+            y_pred = model(X, Y)
             for val_criterion in VALIDATION_METRICS_TRACKED:
                 val_loss = val_criterion(y_pred, Y)
                 print(f'validation batch {bb}, {val_criterion.__name__}: {val_loss.item()}')

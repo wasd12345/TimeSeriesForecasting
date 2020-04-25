@@ -28,5 +28,11 @@ class DummyMLP(nn.Module):
             nn.Linear(10, 1)
             )
 
-    def forward(self, x):
-        return self.MLP_block1(x)
+    def forward(self, X, Y):
+        """
+        Only uses input X.
+        But to have consistent input arguments with other models here,
+        some of which are recurrent models that can optionally use teacher forcing
+        during training (which requires argument Y), also take in Y for this dummy mlp
+        """
+        return self.MLP_block1(X)

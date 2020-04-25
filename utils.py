@@ -73,7 +73,7 @@ class Logger():
             plt.ylabel(f'{loss_name}', fontsize=20)
             plt.legend(numpoints=1)
             
-            savepath = os.path.join(self.output_dir, f'loss__{loss_name}.png')
+            savepath = os.path.join(self.output_dir, f'metric__{loss_name}.png')
             plt.savefig(savepath)
             plt.close()
 
