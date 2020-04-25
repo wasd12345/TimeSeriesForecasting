@@ -34,14 +34,18 @@ import tasks.periodphase_task as periodphase_task
 # =============================================================================
 # PARAMETERS
 # =============================================================================
+#Repeatability
+TORCH_SEED = 12345
 
 # Task params
 TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
 TRAINING_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_information] #'SMAPE' 'MAAPE' #List of metrics to track, one of which is actually optimized (OPTIMIZATION_FUNCTION)
 OPTIMIZATION_FUNCTION_IND = 0 #The actual function used for optimizing the parameters. Provide the index within the list TRAINING_METRICS_TRACKED
 VALIDATION_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_information] #!!!!!!!!!!!!In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
-#!!!!!!!! HISTORY_PARAMS = {} #e.g. min,max of allowed range during training, then random sample          vs. fixed
-#!!!!!!!! HORIZON_PARAMS = {}
+HISTORY_SIZE_TRAINING_MIN_MAX = [7,90] #[min,max] of allowed range during training. For each batch, an int in [min,max] is chosen u.a.r. as the history size
+HORIZON_SIZE_TRAINING_MIN_MAX = [7,50] #same idea but for the horizon size
+HISTORY_SIZE_VALIDATION_MIN_MAX = [30,70] #Same idea but the HISTORY for validation
+HORIZON_SIZE_VALIDATION_MIN_MAX = [30,40] #HORIZON for validation. E.g. 
 
 
 # Model params
@@ -62,7 +66,7 @@ NORMALIZATION = 'once' #'windowed' #how to do normalization: one-time, or in a m
 
 
 # Training params
-MAX_EPOCHS = 89
+MAX_EPOCHS = 200#89
 EARLY_STOPPING_K = 3 #None #If None, don't use early stopping. If int, stop if validation loss in at least one of the most recent K epochs is not less than the K-1th last epoch
 #!!!!!!!!!!!! for now assuming the loss metric is the one being optimized
 
@@ -76,9 +80,9 @@ TRACK_INPUT_STATS = False #True #Whether to trackbasic descriptive stats in inpu
 NUM_WORKERS = 4 #For DataLoader, the num_workers. Just setting equal to number of cores on my CPU
 
 
-# Analysis params
-HISTORY_SIZES = [7,10,50,100]
-HORIZON_SIZES = [3,5,10]
+# Analysis params (for making heatmaps of metrics as f(history,horizon))
+# HISTORY_SIZES = [7,10,50,100]
+# HORIZON_SIZES = [3,5,10]
 
 
 #!!!!! for now just use fixed size
@@ -99,6 +103,8 @@ HORIZON_SIZES = [3,5,10]
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda:0" if use_cuda else "cpu")
 # cudnn.benchmark = True
+torch.manual_seed(TORCH_SEED)
+
 
 # DataLoaders
 if TASK == 'periodphase':
@@ -144,7 +150,7 @@ elif MODEL == 'RecurrentEncoderDecoder':
     D_OUTPUT = 1 #Since right now just test with univariate regression
     enc = RecEncDec.Encoder(INPUT_SIZE, D_HIDDEN, N_LAYERS)
     dec = RecEncDec.Decoder(D_OUTPUT, INPUT_SIZE, D_HIDDEN, N_LAYERS)
-    model = RecEncDec.RecurrentEncoderDecoder(enc, dec, horizon_span).to(device)    
+    model = RecEncDec.RecurrentEncoderDecoder(enc, dec).to(device)    
     
 # elif MODEL == 'dsrnn':
 #     model = dsrnn(...)
@@ -154,29 +160,6 @@ elif MODEL == 'RecurrentEncoderDecoder':
 #     model = ddddddddd(...)
 else:
     raise Exception(f'"{MODEL}" MODEL not implemented yet')
-
-
-
-
-# #!!!!!!!!!!!!!!!!!!!!
-# #just make sure training and metrics work when switched over to forecasting task:
-# import torch.nn as nn
-# class test_sequential(nn.Module):
-#     def __init__(self, history_span, horizon_span):
-#         super(test_sequential, self).__init__()
-#         self.history_span = history_span #test using fixed size input chunks
-#         self.MLP_block1 = nn.Sequential(
-#             nn.Linear(self.history_span, 50),
-#             nn.ReLU(),
-#             nn.Linear(50, 30),
-#             nn.ReLU(),
-#             nn.Linear(30, horizon_span)
-#             )
-#     def forward(self, x):
-#         return self.MLP_block1(x)
-# MODEL = 'test_sequential'
-# model = test_sequential(history_span, horizon_span)    
-# #!!!!!!!!!!!!!!!!!!!!!
 
 
 
@@ -222,13 +205,14 @@ train_batchsize_this_epoch = BS_0__train
 val_batchsize_this_epoch = BS_0__val
 for epoch in range(MAX_EPOCHS):
     print(f'------------- Starting epoch {epoch} -------------\n')
-    
     t0 = time.perf_counter()
     
+    
+    # =============================================================================
     # Training
+    # =============================================================================
     print('Training...\n')
     model.train()
-    
 
     #Other per-batch training params:
     train_batchsize_this_epoch = BS_0__train #For now just use fixed batchsize but could adjust dynamically as necessary
@@ -244,7 +228,10 @@ for epoch in range(MAX_EPOCHS):
     #!!!!!!!!!! put log transform / box-cox etc. in Dataset transform method 
 
     for bb, sample in enumerate(train_dl):
-        # print(f'training batch {bb}')
+        print(f'training batch {bb}')
+        print('train_set.history_span', train_set.history_span)
+        print('train_set.horizon_span', train_set.horizon_span)
+        print('train_set.history_start', train_set.history_start)
         X = sample[0].float()
         Y = sample[1].float()
         
@@ -256,8 +243,8 @@ for epoch in range(MAX_EPOCHS):
         # batch x length x features
         X = torch.unsqueeze(X, 2)
         Y = torch.unsqueeze(Y, 2)
-        print(X.shape)
-        print(Y.shape)        
+        # print(X.shape)
+        # print(Y.shape)        
 
         bsize = X.shape[0]
         logger.n_exs_cumulative_per_batch += bsize #Do this per training batch, since potentially have variable batchsize
@@ -268,7 +255,6 @@ for epoch in range(MAX_EPOCHS):
         #feature distributions [for curriculum learning, metalearning, etc.])
         #...
         
-        
         # Run the forward and backward passes:
         opt.zero_grad()
         #y_pred = model(X) #For models like DummyMLP which do direct forecast, i.e. don't rely on recurrent decoder predictions, so don't need Y vals:
@@ -276,19 +262,15 @@ for epoch in range(MAX_EPOCHS):
         #If don't need teacher forcing(not implemented yet anyway), then can ignore Y
         y_pred = model(X, Y)
         
-        
         #!!!!!!!!!! for now just optimize on single loss function even when tracking multiple.
         #could do as combined loss of the diff loss functions, or change dynamically during training [random, RL, meta, etc.]
         for train_criterion in TRAINING_METRICS_TRACKED:
-            
             train_loss = train_criterion(y_pred, Y)
             logger.losses_dict['training'][train_criterion.__name__].extend([train_loss.item()])
             print(f'training batch {bb}, {train_criterion.__name__}: {train_loss.item()}')
-            
             #If this is the single function that needs to be optimized
             if train_criterion.__name__ == optim_function.__name__:
                 train_loss.backward()
-                
         
         #Gradient clipping, etc.
         GRADIENT_CLIPPING = False#True
@@ -298,7 +280,14 @@ for epoch in range(MAX_EPOCHS):
             torch.nn.utils.clip_grad_value_(model.parameters(), 10.)
         
         opt.step()
-
+        
+        #To do per batch changes, like diff history and horizon sizes, update for the next batch:
+        next_history = torch.randint(HISTORY_SIZE_TRAINING_MIN_MAX[0], HISTORY_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
+        next_horizon = torch.randint(HORIZON_SIZE_TRAINING_MIN_MAX[0], HORIZON_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
+        next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
+        #!!!!!!!!!!! not updating properly #train_set.update_timespans(history_span=next_history, horizon_span=next_horizon, history_start=next_start)
+        train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, next_history, next_horizon, next_start)
+        print()
     
     elapsed_train_time = time.perf_counter() - t0
     logger.n_exs_per_epoch += [logger.n_exs_cumulative_per_batch] #done at the epoch level
@@ -306,7 +295,9 @@ for epoch in range(MAX_EPOCHS):
 
 
 
+    # =============================================================================
     # Validation
+    # =============================================================================
     print('\n\n')
     print('Validation...\n')
     model.eval()
@@ -350,7 +341,7 @@ for epoch in range(MAX_EPOCHS):
             #other example metrics like r^2 or mutual information:
             # r, p_val = pearsonr(Y.view(-1), y_pred.view(-1))
             # print(r, p_val)
-            
+            print()
             
             
             

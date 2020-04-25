@@ -11,12 +11,11 @@ class RecurrentEncoderDecoder(nn.Module):
     """
     Vanilla Encoder-Decoder network
     """
-    def __init__(self, encoder, decoder, horizon_size):
+    def __init__(self, encoder, decoder):
         super(RecurrentEncoderDecoder, self).__init__()
         #Params
         self.encoder = encoder
         self.decoder = decoder
-        self.horizon_size = horizon_size
 
     def forward(self, X, Y):
         # Using input X is shape: (batch x length x features) to be in batch_first LSTM format
@@ -33,11 +32,13 @@ class RecurrentEncoderDecoder(nn.Module):
         inp = Y[:,0,:]
         inp = torch.unsqueeze(inp, 1) #Although slicing out 1st timestep only, keep in usual LSTM rank 3 tensor format
         
-        # inp.unsqu
+        # Dealing with randomized input/output lengths during training:
+        horizon_size = Y.shape[1]
+        
         # Predict as many timesteps into the future as needed
         # (will vary during training, but each batch will have same length to
         # save wasted computation from padding and predicting on padded values)
-        for t in range(self.horizon_size):
+        for t in range(horizon_size):
             y, h, c = self.decoder(inp, h, c)
             # print('deocder forward -----------')
             # print(y.shape, h.shape, c.shape)

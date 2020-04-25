@@ -100,7 +100,7 @@ def create_dataset(
 
 
 class TSFakeDataset(Dataset):
-    """Load one of the dataset csv and do necessary slicing.
+    """Load data and batch into chunks.
     
     params:
             
@@ -154,6 +154,27 @@ class TSFakeDataset(Dataset):
         self.horizon_max_num_outside = horizon_max_num_outside
         self.series_exclude_mask = None#torch.zeros(batchsize) #For those series which don't pass the max_num_outside and max_pct_outside checks
 
+        #Calculate the derived quantities based on those above:
+        #Important to have this method e.g. if doing randomized chunking or 
+        #curriculum learning or similar:
+        self.calculate_derived()
+        
+        print('Loading data')
+        self.data_set = torch.tensor(pd.read_csv(self.dataset_path, header=None).values, dtype=float)
+        self.size = self.data_set.shape[0]
+        
+        
+    def calculate_derived(self):
+        """
+        Some of te Dataset attributes are derived from other values which can 
+        potentially change during training/validation. So recalculate those
+        derived quantities here.
+        Meant to be called after every BATCH.
+        
+        E.g. if you change self.history_size after a batch of training, then we
+        need to recauclate things like the the start and end points of the history
+        chunk of the ensuing training batches.
+        """
         #Some derived quantities:
         #Get number of history and horizon points that will actually be used, given the strides:        
         self.history_npts = int(np.floor((self.history_span - 1) / self.history_stride)) + 1
@@ -163,8 +184,6 @@ class TSFakeDataset(Dataset):
         self.horizon_start = self.history_end + (self.history_horizon_offset-1) #i.e. when offset=1 (default typical case), horizon starts immediately afterhistory (immediate next timestep after history ends)
         self.horizon_end = self.horizon_start + self.horizon_span
         
-        self.data_set = torch.tensor(pd.read_csv(dataset_path, header=None).values, dtype=float)
-        self.size = self.data_set.shape[0]
 
         #Within a given batch, exclude those series which don't pass the max_num_outside and max_pct_outside checks
         #(too many timesteps i nthe series would be NaNs, on either abolsute or percentage basis)
@@ -174,7 +193,7 @@ class TSFakeDataset(Dataset):
         #...
 
 
-        print('Loading data')
+
         
         
     def __len__(self):
@@ -190,9 +209,10 @@ class TSFakeDataset(Dataset):
         
         """
         XY = self.data_set[idx] #!!!!!!!!!!!!assuming univariate data
-        
         X = XY[self.history_start : self.history_end : self.history_stride]
         Y = XY[self.horizon_start : self.horizon_end : self.horizon_stride]
+        # print('X.shape', X.shape)
+        # print('Y.shape', Y.shape)
 
         if self.history_reverse==True:
             X = torch.flip(X.reshape(1,-1),[1]).reshape(-1) #!!!!!!!!for now ok with univariate time series
@@ -239,8 +259,24 @@ class TSFakeDataset(Dataset):
         """
         pass
 
+    # def update_timespans(self, **kwargs):
+    #     """
+    #     Change a few different properties: history_span, horizon_span, history_start
+        
+    #     Meant to be called between each training batch, in order to have random
+    #     size history and horizons, instead of just training with a single fixed history
+    #     and horizon. This randomization over sizes whould act as a form of regularization
+    #     by causing the models to peerform well over a range of input/output sizes.
+    #     Or can also be thought of as data augmentation since we are randomly chunking
+    #     the data in different ways.
+    #     """
+    #     for kk,vv in kwargs.items():
+    #         self.kk = vv
+    #         # print(kk, self.kk)
 
-
+    #     #And now since some parameters may have changed, must recalculate all
+    #     #the derived parameters:
+    #     self.calculate_derived()
 
 
 if __name__ == '__main__':
