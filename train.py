@@ -17,6 +17,7 @@ from utils import Logger, plot_regression_scatterplot, plot_predictions
 #Pytorch models
 from models.DummyMLP import DummyMLP
 import models.RecurrentEncoderDecoder as RecEncDec
+import models.ConvolutionalEncoderDecoder as ConvEncDec
 # from models.DSRNN import sssssssss
 
 #Tasks / problem applications
@@ -42,10 +43,10 @@ TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction t
 TRAINING_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_information] #'SMAPE' 'MAAPE' #List of metrics to track, one of which is actually optimized (OPTIMIZATION_FUNCTION)
 OPTIMIZATION_FUNCTION_IND = 0 #The actual function used for optimizing the parameters. Provide the index within the list TRAINING_METRICS_TRACKED
 VALIDATION_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_information] #!!!!!!!!!!!!In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
-HISTORY_SIZE_TRAINING_MIN_MAX = [7,90] #[min,max] of allowed range during training. For each batch, an int in [min,max] is chosen u.a.r. as the history size
-HORIZON_SIZE_TRAINING_MIN_MAX = [7,50] #same idea but for the horizon size
-HISTORY_SIZE_VALIDATION_MIN_MAX = [30,70] #Same idea but the HISTORY for validation
-HORIZON_SIZE_VALIDATION_MIN_MAX = [30,40] #HORIZON for validation. E.g. 
+HISTORY_SIZE_TRAINING_MIN_MAX = [20,75] #[min,max] of allowed range during training. For each batch, an int in [min,max] is chosen u.a.r. as the history size
+HORIZON_SIZE_TRAINING_MIN_MAX = [7,30] #same idea but for the horizon size
+HISTORY_SIZE_VALIDATION_MIN_MAX = [20,70] #Same idea but the HISTORY for validation
+HORIZON_SIZE_VALIDATION_MIN_MAX = [7,25] #HORIZON for validation. E.g. 
 
 
 # Model params
@@ -73,7 +74,7 @@ EARLY_STOPPING_K = 3 #None #If None, don't use early stopping. If int, stop if v
 
 # BATCHSIZE_SCHEDULE = ppppppp #how to adjust batchszie with training, e.g. random btwn min max,    vs.    decreasing batchsizes, etc.
 BS_0__train = 200 #Initial training batchsize (since batchsize may vary)
-BS_0__val = 70 #Initial validation batchsize
+BS_0__val = 256 #Initial validation batchsize
 LOGS_DIR = 'logs'
 OUTPUT_DIR = 'output'
 TRACK_INPUT_STATS = False #True #Whether to trackbasic descriptive stats in input batches (feature-wise statistics)
@@ -243,8 +244,8 @@ for epoch in range(MAX_EPOCHS):
         # batch x length x features
         X = torch.unsqueeze(X, 2)
         Y = torch.unsqueeze(Y, 2)
-        # print(X.shape)
-        # print(Y.shape)        
+        print(X.shape)
+        print(Y.shape)        
 
         bsize = X.shape[0]
         logger.n_exs_cumulative_per_batch += bsize #Do this per training batch, since potentially have variable batchsize
@@ -260,7 +261,9 @@ for epoch in range(MAX_EPOCHS):
         #y_pred = model(X) #For models like DummyMLP which do direct forecast, i.e. don't rely on recurrent decoder predictions, so don't need Y vals:
         # vs. for recurrent deocders, which may use teacher forcing.
         #If don't need teacher forcing(not implemented yet anyway), then can ignore Y
-        y_pred = model(X, Y)
+        #if the model works for variable size horizons, must specify what horizon size to use:
+        y_pred = model(X, Y, train_set.horizon_span)
+        print(y_pred.shape)
         
         #!!!!!!!!!! for now just optimize on single loss function even when tracking multiple.
         #could do as combined loss of the diff loss functions, or change dynamically during training [random, RL, meta, etc.]
@@ -280,14 +283,16 @@ for epoch in range(MAX_EPOCHS):
             torch.nn.utils.clip_grad_value_(model.parameters(), 10.)
         
         opt.step()
-        
-        #To do per batch changes, like diff history and horizon sizes, update for the next batch:
-        next_history = torch.randint(HISTORY_SIZE_TRAINING_MIN_MAX[0], HISTORY_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
-        next_horizon = torch.randint(HORIZON_SIZE_TRAINING_MIN_MAX[0], HORIZON_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
-        next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
-        #!!!!!!!!!!! not updating properly #train_set.update_timespans(history_span=next_history, horizon_span=next_horizon, history_start=next_start)
-        train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, next_history, next_horizon, next_start)
         print()
+        
+    #To do per EPOCH changes, like diff history and horizon sizes, update for the next EPOCH:
+    next_history = torch.randint(HISTORY_SIZE_TRAINING_MIN_MAX[0], HISTORY_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
+    next_horizon = torch.randint(HORIZON_SIZE_TRAINING_MIN_MAX[0], HORIZON_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
+    next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
+    #!!!!!!!!!!! not updating properly #train_set.update_timespans(history_span=next_history, horizon_span=next_horizon, history_start=next_start)
+    train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, next_history, next_horizon, next_start)
+    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)#, num_workers=NUM_WORKERS)
+
     
     elapsed_train_time = time.perf_counter() - t0
     logger.n_exs_per_epoch += [logger.n_exs_cumulative_per_batch] #done at the epoch level
@@ -322,7 +327,7 @@ for epoch in range(MAX_EPOCHS):
             
             
             # Run the forward pass:
-            y_pred = model(X, Y)
+            y_pred = model(X, Y, val_set.horizon_span)
             for val_criterion in VALIDATION_METRICS_TRACKED:
                 val_loss = val_criterion(y_pred, Y)
                 print(f'validation batch {bb}, {val_criterion.__name__}: {val_loss.item()}')
@@ -341,9 +346,19 @@ for epoch in range(MAX_EPOCHS):
             #other example metrics like r^2 or mutual information:
             # r, p_val = pearsonr(Y.view(-1), y_pred.view(-1))
             # print(r, p_val)
-            print()
             
+            print()            
             
+
+    #To do per batch changes, like diff history and horizon sizes, update for the next batch:
+    #however this will greatly increase variance over validation metrics.
+    #better to do a full range of history/horizon sizes, at each valifation epoch. !!!!!!!!!!!!!!!!!
+    #or if the particular application has a single horizon size of interest then obviously use that....
+    next_history = torch.randint(HISTORY_SIZE_VALIDATION_MIN_MAX[0], HISTORY_SIZE_VALIDATION_MIN_MAX[1], [1], dtype=int).item()
+    next_horizon = torch.randint(HORIZON_SIZE_VALIDATION_MIN_MAX[0], HORIZON_SIZE_VALIDATION_MIN_MAX[1], [1], dtype=int).item()
+    next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
+    val_set = tsfake_task.TSFakeDataset(VAL_PATH, next_history, next_horizon, next_start)
+    val_dl = DataLoader(val_set, batch_size=BS_0__val, shuffle=True)
             
     elapsed_val_time = time.perf_counter() - elapsed_train_time
     print(f'elapsed_val_time = {elapsed_val_time}')
