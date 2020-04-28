@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 import torch
 from scipy.stats import pearsonr
+import pandas as pd
 
 
 class Logger():
@@ -61,18 +62,23 @@ class Logger():
             
             x_train = np.cumsum(self.batchsizes['training'])
             y_train = self.losses_dict['training'][loss_name]
+            #Moving average over metric during training:
+            #!!!!!!!!!!! since graphing per batch, (so last batch of epoch could have fewer exs), should really first weight by number of samples in batch....
+            y_train_MA = pd.DataFrame(y_train).ewm(span=5,adjust=False).mean().values.flatten()
             
             x_val = self.n_exs_cumulative_per_epoch
             y_val = self.losses_dict['validation'][loss_name]
-            
+            #Moving average over metric during validation....
+            #since all batches of validation done after same amoutn of training, must merge values first 1 get single value per epoch, then do EMA
+                
             plt.figure()
             plt.title(f'Train & Validation {loss_name}', fontsize=20)
-            plt.plot(x_train, y_train, marker='o', color='k', label='Train')
-            plt.plot(x_val, y_val, marker='s', color='r', label='Validation')
+            plt.plot(x_train, y_train, marker='o', color='k', linestyle='None', alpha=.3, label='Train')
+            plt.plot(x_train, y_train_MA, color='k', label='Train Ave')
+            plt.plot(x_val, y_val, marker='s', color='r', linestyle='None', alpha=.3, label='Validation')
             plt.xlabel('Cumulative Examples', fontsize=20)
             plt.ylabel(f'{loss_name}', fontsize=20)
             plt.legend(numpoints=1)
-            
             savepath = os.path.join(self.output_dir, f'metric__{loss_name}.png')
             plt.savefig(savepath)
             plt.close()
@@ -135,7 +141,7 @@ def plot_regression_scatterplot(pred, true, output_dir, epoch):
     p_rounded = round(p_val, n_dec)
     plt.figure()
     plt.title(f'Scatterplot at epoch {epoch}\nr={r_rounded}, p-val={p_rounded}', fontsize=16)
-    plt.plot(true, pred, marker='o', color='b', linestyle='None')
+    plt.plot(true, pred, marker='o', color='b', alpha=.5, linestyle='None')
     plt.xlabel('True', fontsize=20)
     plt.ylabel('Predicted', fontsize=20)
     
