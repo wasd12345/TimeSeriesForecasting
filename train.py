@@ -58,7 +58,7 @@ MODEL = 'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models
 
 
 # Pre-processing optionss
-NORMALIZATION = 'once' #'windowed' #how to do normalization: one-time, or in a moving sliding window for each chunk of input
+# NORMALIZATION = 'once' #'windowed' #how to do normalization: one-time, or in a moving sliding window for each chunk of input
 # BOX_COX - standard 1var Box-Cox power transform
 # DESEASONED - 
 # LEARNED - learn the parameters of the transform via backprop
@@ -146,11 +146,14 @@ else:
 if MODEL == 'DummyMLP':
     model = DummyMLP(history_span, INPUT_SIZE)
 elif MODEL == 'RecurrentEncoderDecoder':
-    N_LAYERS = 2
+    N_LAYERS = 3
     D_HIDDEN = 32
     D_OUTPUT = 1 #Since right now just test with univariate regression
-    enc = RecEncDec.Encoder(INPUT_SIZE, D_HIDDEN, N_LAYERS)
-    dec = RecEncDec.Decoder(D_OUTPUT, INPUT_SIZE, D_HIDDEN, N_LAYERS)
+    BIDIRECTIONAL = True #False #True #Use bidirectional encoder
+    P_DROPOUT_ENCODER = .25
+    P_DROPOUT_DECODER = .25
+    enc = RecEncDec.Encoder(INPUT_SIZE, D_HIDDEN, N_LAYERS, BIDIRECTIONAL, P_DROPOUT_ENCODER)
+    dec = RecEncDec.Decoder(D_OUTPUT, INPUT_SIZE, D_HIDDEN, N_LAYERS, P_DROPOUT_DECODER)
     model = RecEncDec.RecurrentEncoderDecoder(enc, dec).to(device)    
     
 # elif MODEL == 'dsrnn':
@@ -282,6 +285,11 @@ for epoch in range(MAX_EPOCHS):
             #torch.nn.utils.clip_grad_norm_(model.parameters(), ...)
             torch.nn.utils.clip_grad_value_(model.parameters(), 10.)
         
+        #Add a small amount of noise to the gradients as a form of regularization:
+        # GRADIENT_NOISE = False
+        # if GRADIENT_NOISE:
+        #     ...
+            
         opt.step()
         print()
         
