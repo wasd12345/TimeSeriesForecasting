@@ -36,7 +36,7 @@ and several other scripts
 
 ---
 
-### Setup
+## Setup
 
 Make sure you have Pytorch set up properly. I'm using 1.4.0
 
@@ -63,7 +63,9 @@ Step 2: Run the training script:
 $ python train.py
 ```
 
+---
 
+## Example Output
 
 ---
 
@@ -78,5 +80,7 @@ $ python train.py
 
 
 - **History/Horizon Analysis**
+
+- **finish quantiles, for multivariate (right now working with quantiles & univariate)
 
 ---

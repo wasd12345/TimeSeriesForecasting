@@ -22,6 +22,7 @@ class RecurrentEncoderDecoder(nn.Module):
         #Params
         self.encoder = encoder
         self.decoder = decoder
+        self.connector = nn.Linear(self.decoder.d_input, self.decoder.d_output)
         if self.encoder.bidirectional:
             #Independently project both directions for h, and both directions for c:
             N = self.encoder.n_layers * self.encoder.d_hidden
@@ -69,11 +70,20 @@ class RecurrentEncoderDecoder(nn.Module):
             #h and c are now [n_layers x bacthsize x d_hidden],
             #which is exactly as needed for the (unidirectional) decoder
 
-        
         # Decoder input at 1st decoding timestep
         #inp = Y[:,0,:]
         inp = X[:,-1,:]
         inp = torch.unsqueeze(inp, 1) #Although slicing out 1st timestep only, keep in usual LSTM rank 3 tensor format
+
+        #If doing quantile forecasting on a univariate input,
+        #the encoder will have d_input=1. 
+        #But for the decodder, we want d_output = #quantiles
+        #Also, we want the previous timestep's quantiles to be recursively fed
+        #into the next timestep as features (same as how a typical deocder 
+        #recursively uses the previous timesteps).
+        #So we need an additional one-time step to convert the d_input dimension
+        #to the d_output dimension:
+        inp = self.connector(inp)
         
         # Predict as many timesteps into the future as needed
         # (will vary during training, but each batch will have same length to
@@ -84,8 +94,9 @@ class RecurrentEncoderDecoder(nn.Module):
             # print(y.shape, h.shape, c.shape)
             outputs.append(y)
             inp = y
-            
-        #Make the outputs into a tensor:
+        
+        # Stack the outputs along the timestep axis into a tensor with shape:
+        # [batchsize x length x output]
         all_outputs = torch.cat([i for i in outputs], dim=1)
         return all_outputs
 
@@ -124,14 +135,14 @@ class Decoder(nn.Module):
     def __init__(self, d_output, d_input, d_hidden, n_layers, p_dropout_decoder):
         super().__init__()
         # Params
+        self.d_input = d_input
         self.d_output = d_output
         self.d_hidden = d_hidden
         self.n_layers = n_layers
         # Layers
-        self.recurrence = nn.LSTM(d_input, d_hidden, n_layers, batch_first=True, dropout=p_dropout_decoder)
+        self.recurrence = nn.LSTM(d_output, d_hidden, n_layers, batch_first=True, dropout=p_dropout_decoder)
         self.linear = nn.Linear(d_hidden, d_output)
     def forward(self, inp, h, c):
-        # print(inp.shape)
         output, (h, c) = self.recurrence(inp, (h, c))
         y = self.linear(output.squeeze(0))
         return y, h, c

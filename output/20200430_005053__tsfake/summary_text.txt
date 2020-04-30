@@ -1,0 +1,8 @@
+START_TIME = 20200430_005053
+TASK = tsfake
+INPUT_SIZE (#features) = 1
+MODEL = RecurrentEncoderDecoder
+opt = Adam
+TRAINING_METRICS_TRACKED = ['mse_loss', 'SMAPE', 'MAPE', 'bias', 'pearson_r', 'mutual_information', 'quantile_loss', 'q50_point_est']
+VALIDATION_METRICS_TRACKED = ['mse_loss', 'SMAPE', 'MAPE', 'bias', 'pearson_r', 'mutual_information', 'quantile_loss', 'q60_point_est']
+optim_function = quantile_loss

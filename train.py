@@ -8,8 +8,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 #Other evaluation metrics
-from metrics import SMAPE, MAPE, bias, pearson_r, mutual_information
-
+from metrics import SMAPE, MAPE, bias, pearson_r, mutual_information, quantile_loss
 
 #Logging / tracker class
 from utils import Logger, plot_regression_scatterplot, plot_predictions
@@ -18,13 +17,11 @@ from utils import Logger, plot_regression_scatterplot, plot_predictions
 from models.DummyMLP import DummyMLP
 import models.RecurrentEncoderDecoder as RecEncDec
 import models.ConvolutionalEncoderDecoder as ConvEncDec
-# from models.DSRNN import sssssssss
 
 #Tasks / problem applications
 #(defined in specific way with Dataset class to be used by DataLoader)
 import tasks.tsfake_task as tsfake_task
 import tasks.periodphase_task as periodphase_task
-#... other tasks
 
 
 
@@ -35,26 +32,49 @@ import tasks.periodphase_task as periodphase_task
 # =============================================================================
 # PARAMETERS
 # =============================================================================
+
 #Repeatability
 TORCH_SEED = 12345
 
 # Task params
 TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
-TRAINING_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_information] #'SMAPE' 'MAAPE' #List of metrics to track, one of which is actually optimized (OPTIMIZATION_FUNCTION)
-OPTIMIZATION_FUNCTION_IND = 0 #The actual function used for optimizing the parameters. Provide the index within the list TRAINING_METRICS_TRACKED
-VALIDATION_METRICS_TRACKED = [F.mse_loss, SMAPE, MAPE, bias, pearson_r, mutual_information] #!!!!!!!!!!!!In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
 HISTORY_SIZE_TRAINING_MIN_MAX = [20,75] #[min,max] of allowed range during training. For each batch, an int in [min,max] is chosen u.a.r. as the history size
 HORIZON_SIZE_TRAINING_MIN_MAX = [7,30] #same idea but for the horizon size
 HISTORY_SIZE_VALIDATION_MIN_MAX = [20,70] #Same idea but the HISTORY for validation
 HORIZON_SIZE_VALIDATION_MIN_MAX = [7,25] #HORIZON for validation. E.g. 
 
+#Performance Metrics / Optimization metric
+#The actual function used for optimizing the parameters. Provide the name of one key in the dict TRAINING_METRICS_TRACKED                            
+OPTIMIZATION_FUNCTION_NAME = 'quantile_loss'#'SMAPE'#'q45_point_est'#'SMAPE'
+QUANTILES_LIST = [.45, .5] #[.05, .25, .45, .5, .55, .75, .95] #!!!!!!!!!!!!for now just use same quantiles for all quantile metrics but in general can differ
+#Format is: '{metric_name}' : ({function}, {dict of kwargs})
+TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, {}),
+                            'SMAPE':(SMAPE, {}),
+                            'MAPE':(MAPE, {}),
+                            'bias':(bias, {}),
+                            'pearson_r':(pearson_r, {}),
+                            'mutual_information':(mutual_information, {}),
+                            'quantile_loss':(quantile_loss, {'quantiles':QUANTILES_LIST+[.95]}),
+                            'q50_point_est':(quantile_loss, {'quantiles':[.50]})
+                            # 'l1_loss':(F.l1_loss, {}) #Just to compare to 50q pinball loss to make sure is same
+                            }
+#In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
+VALIDATION_METRICS_TRACKED = {'mse_loss':(F.mse_loss, {}),
+                            'SMAPE':(SMAPE, {}),
+                            'MAPE':(MAPE, {}),
+                            'bias':(bias, {}),
+                            'pearson_r':(pearson_r, {}),
+                            'mutual_information':(mutual_information, {}),
+                            'quantile_loss':(quantile_loss, {'quantiles':QUANTILES_LIST+[.75]}),
+                            'q60_point_est':(quantile_loss, {'quantiles':[.60]})
+                            }
 
 # Model params
 MODEL = 'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models, to do direct comparison      MODEL_LIST = ...
 #!!!!!!! vs. MODEL_LIST = ['dsrnn', 'Cho',...] and then track stats for each model, at same time, using individual optimizers but exact same training / val batches
 #!!!!!!! ENSEMBLE_N_MODELS = 1 #Number of models to average together in bagged ensemble
 #!!!!!!! ENSEMBLE_N_CHECKPOINTS = 1 #Number of checkpoints over which to do weight averaging [EMA weighting]
-#!!!!!!! QUANTILES_LIST = [.05, .25, .45, .5, .55, .75, .95] #Which quantiles for which to predict vals
+
 
 
 # Pre-processing optionss
@@ -64,32 +84,21 @@ MODEL = 'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models
 # LEARNED - learn the parameters of the transform via backprop
 # META - learn the params via metalearning
 
-
-
 # Training params
-MAX_EPOCHS = 200#89
-EARLY_STOPPING_K = 3 #None #If None, don't use early stopping. If int, stop if validation loss in at least one of the most recent K epochs is not less than the K-1th last epoch
+MAX_EPOCHS = 200 #89
+# EARLY_STOPPING_K = 3 #None #If None, don't use early stopping. If int, stop if validation loss in at least one of the most recent K epochs is not less than the K-1th last epoch
 #!!!!!!!!!!!! for now assuming the loss metric is the one being optimized
-
-
 # BATCHSIZE_SCHEDULE = ppppppp #how to adjust batchszie with training, e.g. random btwn min max,    vs.    decreasing batchsizes, etc.
 BS_0__train = 200 #Initial training batchsize (since batchsize may vary)
 BS_0__val = 256 #Initial validation batchsize
-LOGS_DIR = 'logs'
-OUTPUT_DIR = 'output'
-TRACK_INPUT_STATS = False #True #Whether to trackbasic descriptive stats in input batches (feature-wise statistics)
+# TRACK_INPUT_STATS = False #True #Whether to trackbasic descriptive stats in input batches (feature-wise statistics)
 NUM_WORKERS = 4 #For DataLoader, the num_workers. Just setting equal to number of cores on my CPU
 
-
-# Analysis params (for making heatmaps of metrics as f(history,horizon))
+# !!!!!!!!! Analysis params (for making heatmaps of metrics as f(history,horizon))
 # HISTORY_SIZES = [7,10,50,100]
 # HORIZON_SIZES = [3,5,10]
 
 
-#!!!!! for now just use fixed size
-# SEQ_LENGTH = 100 #HISTORY_SIZES[0] #can do for i for j loops over histories and horizons
-#Some kinds of models implemented from papers can only train on a fixed HISTORY size, need to individually train different sizes (bad)
-#so for now, just use fixed 30 timestep history size as example
 
 
 
@@ -106,6 +115,7 @@ device = torch.device("cuda:0" if use_cuda else "cpu")
 # cudnn.benchmark = True
 torch.manual_seed(TORCH_SEED)
 
+OUTPUT_DIR = 'output'
 
 # DataLoaders
 if TASK == 'periodphase':
@@ -146,12 +156,12 @@ else:
 if MODEL == 'DummyMLP':
     model = DummyMLP(history_span, INPUT_SIZE)
 elif MODEL == 'RecurrentEncoderDecoder':
-    N_LAYERS = 3
+    N_LAYERS = 2#3
     D_HIDDEN = 32
     D_OUTPUT = 1 #Since right now just test with univariate regression
-    BIDIRECTIONAL = True #False #True #Use bidirectional encoder
-    P_DROPOUT_ENCODER = .25
-    P_DROPOUT_DECODER = .25
+    BIDIRECTIONAL = False #False #True #Use bidirectional encoder
+    P_DROPOUT_ENCODER = 0.#.25
+    P_DROPOUT_DECODER = 0.#.25
     enc = RecEncDec.Encoder(INPUT_SIZE, D_HIDDEN, N_LAYERS, BIDIRECTIONAL, P_DROPOUT_ENCODER)
     dec = RecEncDec.Decoder(D_OUTPUT, INPUT_SIZE, D_HIDDEN, N_LAYERS, P_DROPOUT_DECODER)
     model = RecEncDec.RecurrentEncoderDecoder(enc, dec).to(device)    
@@ -174,10 +184,7 @@ opt = torch.optim.Adam(model.parameters())
 #scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, ***)
 
 #Training Metric [metric which actually gets optimized]
-optim_function = TRAINING_METRICS_TRACKED[OPTIMIZATION_FUNCTION_IND]
-# train_criterion = TRAINING_METRICS_TRACKED()
-# val_criterion = VALIDATION_METRICS_TRACKED()
-
+optim_function = TRAINING_METRICS_TRACKED[OPTIMIZATION_FUNCTION_NAME][0]
 
 START_TIME = datetime.now().strftime("%Y%m%d_%H%M%S")
 summary_text = f'START_TIME = {START_TIME}\n' + \
@@ -185,19 +192,20 @@ summary_text = f'START_TIME = {START_TIME}\n' + \
     f'INPUT_SIZE (#features) = {INPUT_SIZE}\n' + \
     f'MODEL = {MODEL}\n' + \
     f'opt = {opt.__class__.__name__}\n' + \
-    f'TRAINING_METRICS_TRACKED = {[of.__name__ for of in TRAINING_METRICS_TRACKED]}\n' + \
-    f'VALIDATION_METRICS_TRACKED = {[of.__name__ for of in VALIDATION_METRICS_TRACKED]}\n' + \
-    f'optim_function = {optim_function.__class__.__name__}\n'
-print(summary_text)
-
+    f'TRAINING_METRICS_TRACKED = {[of for of in TRAINING_METRICS_TRACKED]}\n' + \
+    f'VALIDATION_METRICS_TRACKED = {[of for of in VALIDATION_METRICS_TRACKED]}\n' + \
+    f'optim_function = {optim_function.__name__}\n'
 
 #Init the logger to track things / plot things, do metalearning
-logger = Logger(TASK, START_TIME)
-
+logger = Logger(TASK, START_TIME, TRAINING_METRICS_TRACKED, VALIDATION_METRICS_TRACKED)
 
 #Save summary text to log file
 #...
-
+with open(os.path.join(logger.output_dir, 'summary_text.txt'), 'w') as gg:
+    gg.write(summary_text)
+    
+    
+    
 #Save parameters to txt file
 #...
 
@@ -209,7 +217,7 @@ train_batchsize_this_epoch = BS_0__train
 val_batchsize_this_epoch = BS_0__val
 for epoch in range(MAX_EPOCHS):
     print(f'------------- Starting epoch {epoch} -------------\n')
-    t0 = time.perf_counter()
+    t0 = 0.
     
     
     # =============================================================================
@@ -247,8 +255,8 @@ for epoch in range(MAX_EPOCHS):
         # batch x length x features
         X = torch.unsqueeze(X, 2)
         Y = torch.unsqueeze(Y, 2)
-        print(X.shape)
-        print(Y.shape)        
+        print('X.shape', X.shape)
+        print('Y.shape', Y.shape)        
 
         bsize = X.shape[0]
         logger.n_exs_cumulative_per_batch += bsize #Do this per training batch, since potentially have variable batchsize
@@ -268,15 +276,24 @@ for epoch in range(MAX_EPOCHS):
         y_pred = model(X, Y, train_set.horizon_span)
         print(y_pred.shape)
         
-        #!!!!!!!!!! for now just optimize on single loss function even when tracking multiple.
-        #could do as combined loss of the diff loss functions, or change dynamically during training [random, RL, meta, etc.]
-        for train_criterion in TRAINING_METRICS_TRACKED:
-            train_loss = train_criterion(y_pred, Y)
-            logger.losses_dict['training'][train_criterion.__name__].extend([train_loss.item()])
-            print(f'training batch {bb}, {train_criterion.__name__}: {train_loss.item()}')
+        #For now just optimize on single loss function even when tracking multiple functions.
+        #Can combine functions by just defining a new combined function in the metrics.py script, then add that function to TRAINING_METRICS_TRACKED
+        #If want to have combined function but with dynamically changing parameters, or e.g. 
+        #completely switching loss functions during training [via random, RL, meta, etc.],
+        #then would have to modify below ....
+        for name, function_tuple in TRAINING_METRICS_TRACKED.items():
+            function = function_tuple[0]
+            kwargs = function_tuple[1]
+            train_loss = function(y_pred, Y, **kwargs)
+            # losses = [ii.item() for ii in train_loss]
+            logger.losses_dict['training'][name].append(train_loss.tolist())
+            print(f'training batch {bb}, {name}: {train_loss.tolist()}')
             #If this is the single function that needs to be optimized
-            if train_criterion.__name__ == optim_function.__name__:
-                train_loss.backward()
+            if name == optim_function.__name__:
+                #use this ones arg so will work even if doing quantile loss w.r.t. multiple quantiles.
+                #(all 1's means equal weight to each quantile. Can adjust weights as necessary if desired)
+                #(and if only doing point estimates, this is equivalent to having no arg as in usual loss.backward() )
+                train_loss.backward(torch.ones(train_loss.shape))
         
         #Gradient clipping, etc.
         GRADIENT_CLIPPING = False#True
@@ -328,19 +345,18 @@ for epoch in range(MAX_EPOCHS):
             X = torch.unsqueeze(X, 2)
             Y = torch.unsqueeze(Y, 2)
 
-
             bsize = X.shape[0]
             logger.batchsizes['validation'].extend([bsize])
             logger.n_exs_cumulative_per_epoch.extend([logger.n_exs_per_epoch[-1]]) #To use for validation loss plots. Value is repeated for each validation batch.
             
-            
             # Run the forward pass:
             y_pred = model(X, Y, val_set.horizon_span)
-            for val_criterion in VALIDATION_METRICS_TRACKED:
-                val_loss = val_criterion(y_pred, Y)
-                print(f'validation batch {bb}, {val_criterion.__name__}: {val_loss.item()}')
-                logger.losses_dict['validation'][val_criterion.__name__].extend([val_loss.item()])     
-        
+            for name, function_tuple in VALIDATION_METRICS_TRACKED.items():
+                function = function_tuple[0]
+                kwargs = function_tuple[1]
+                val_loss = function(y_pred, Y, **kwargs)
+                logger.losses_dict['validation'][name].extend([val_loss.tolist()])
+                print(f'validation batch {bb}, {name}: {val_loss.tolist()}')
         
             #Print a few examples to compare
             plot_regression_scatterplot(y_pred.view(-1), Y.view(-1), logger.output_dir, logger.n_epochs_completed)
@@ -350,10 +366,6 @@ for epoch in range(MAX_EPOCHS):
             plot_predictions(X[INDEX], Y[INDEX], y_pred[INDEX], logger.output_dir, logger.n_epochs_completed)
             # print(y_pred[:10])
             # print(Y[:10])
-            
-            #other example metrics like r^2 or mutual information:
-            # r, p_val = pearsonr(Y.view(-1), y_pred.view(-1))
-            # print(r, p_val)
             
             print()            
             
