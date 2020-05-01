@@ -50,7 +50,7 @@ def MAAPE(pred, true):
 # QUANTILES (and/or POINT ESTIMATES, TOO)
 # =============================================================================
 
-def quantile_loss(pred, true, quantiles):#, reduction='mean'):
+def quantile_loss(pred, true, quantiles, mask=None, weights=None):
     """
     Pinball loss = 
         q * (true - pred)           if    true >= pred
@@ -59,7 +59,11 @@ def quantile_loss(pred, true, quantiles):#, reduction='mean'):
     returns a list of the mean pinball loss for each quantile q
     (mean is over all BATCHES and TIMESTEPS)
     
-    Don't directlyoptimize this function. Instead
+    
+    mask - mask tensor to ignore certain elements from optimization
+    / vs.
+    weights - weights tensor to weight different elements for optimization
+    
     """
     mean_pinball = []
     for nn, q in enumerate(quantiles):

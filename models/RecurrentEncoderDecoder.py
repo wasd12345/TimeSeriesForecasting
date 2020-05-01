@@ -17,16 +17,27 @@ class RecurrentEncoderDecoder(nn.Module):
     **The encoder LSTM and decoder LSTM have the same number of layers.
     **The regression output is assumed univariate for now.
     """
-    def __init__(self, encoder, decoder):
+    def __init__(self, input_size, d_hidden, M, Q, d_future_features, n_layers,
+                 bidirectional_encoder, p_dropout_encoder, p_dropout_decoder):
         super(RecurrentEncoderDecoder, self).__init__()
         #Params
-        self.encoder = encoder
-        self.decoder = decoder
-        self.connector = nn.Linear(self.decoder.d_input, self.decoder.d_output)
-        if self.encoder.bidirectional:
+        self.input_size = input_size
+        self.d_hidden = d_hidden
+        self.M = M
+        self.Q = Q
+        self.d_future_features = d_future_features
+        self.n_layers = n_layers
+        self.bidirectional_encoder = bidirectional_encoder
+        self.p_dropout_encoder = p_dropout_encoder
+        self.p_dropout_decoder = p_dropout_decoder
+        
+        self.encoder = Encoder(self.input_size, self.d_hidden, self.n_layers, self.bidirectional_encoder, self.p_dropout_encoder)
+        self.decoder = Decoder(self.M, self.Q, self.d_future_features, self.d_hidden, self.n_layers, self.p_dropout_decoder)
+        # self.connector = nn.Linear(self.decoder.ddddddddddddddddddddd, self.decoder.d_input)
+        
+        if self.bidirectional_encoder:
             #Independently project both directions for h, and both directions for c:
             N = self.encoder.n_layers * self.encoder.d_hidden
-            print('N', N)
             self.bidi_project__h = nn.Linear(2*N, N)
             self.bidi_project__c = nn.Linear(2*N, N)
             self.nonlin__h = nn.ELU()
@@ -45,7 +56,7 @@ class RecurrentEncoderDecoder(nn.Module):
         
         #If bidirectional encoder, concat the forward and backward directions,
         #and use small feedforward NN and project back to hidden size:
-        if self.encoder.bidirectional:
+        if self.bidirectional_encoder:
             batchsize = X.shape[0]
             
             #Concat the forward and backward directions for hidden state vectors, h,
@@ -75,25 +86,37 @@ class RecurrentEncoderDecoder(nn.Module):
         inp = X[:,-1,:]
         inp = torch.unsqueeze(inp, 1) #Although slicing out 1st timestep only, keep in usual LSTM rank 3 tensor format
 
-        #If doing quantile forecasting on a univariate input,
-        #the encoder will have d_input=1. 
-        #But for the decodder, we want d_output = #quantiles
-        #Also, we want the previous timestep's quantiles to be recursively fed
-        #into the next timestep as features (same as how a typical deocder 
-        #recursively uses the previous timesteps).
-        #So we need an additional one-time step to convert the d_input dimension
-        #to the d_output dimension:
-        inp = self.connector(inp)
+        # =============================================================================
+        # actually don't use the connector idea. 
+        # instead, assume even mroe multivar, that you would have measured all those vars durign history input.
+        # so won't need a conenctor since encoder and decoder will have dimensions for input #features
+        # (could always use max(input features, future features) and then nan pad, or 2x dims per feature with [0,1] feature present absent approach...)
+        # =============================================================================
+            # #If doing quantile forecasting on a univariate input,
+            # #the encoder will have d_input=1. 
+            # #But for the decodder, we want d_output = #quantiles
+            # #Also, we want the previous timestep's quantiles to be recursively fed
+            # #into the next timestep as features (same as how a typical deocder 
+            # #recursively uses the previous timesteps).
+            # #So we need an additional one-time step to convert the d_input dimension
+            # #to the d_output dimension:
+            # print(inp.shape)
+            # # inp = self.connector(inp)
         
+        
+        print('inp.shape', inp.shape)
         # Predict as many timesteps into the future as needed
         # (will vary during training, but each batch will have same length to
         # save wasted computation from padding and predicting on padded values)
         for t in range(horizon_span):
-            y, h, c = self.decoder(inp, h, c)
+            y_out, y_next, h, c = self.decoder(inp, h, c)
             # print('deocder forward -----------')
-            # print(y.shape, h.shape, c.shape)
-            outputs.append(y)
-            inp = y
+            # print(y_out.shape, y_next.shape, h.shape, c.shape)
+            outputs.append(y_out)
+            #y_next is same as y_out if NOT doing quantile estimates.
+            #but if doing quantile estimates, y_out includes those, but y_next uses only the point estimates in a recursive fashion.
+            #(to also use the quantile estimates as recursive input, uncomment the "self.linear_out_next_in" layer in Decoder)
+            inp = y_next
         
         # Stack the outputs along the timestep axis into a tensor with shape:
         # [batchsize x length x output]
@@ -129,20 +152,61 @@ class Encoder(nn.Module):
     
 class Decoder(nn.Module):
     """
-    Decoder module. For now, if multilayer, assume same dims as encoder...
-    **can change d_output to >1 for multivariate regression but for now just test with =1
+    Decoder module. For now assumes same n_layer and d_hidden dims as encoder...
+    
+    
+    d_future_features - int. Number of features at each timestep. E.g. if using
+    some timestamp related features, you know those even for future time steps
+    despite not knowing the value of the series itself.
+    
+    d_output - int. Number of output dimensions. Is M*Q, where M is number of
+    variables of output (M=1 for univariate, M>=2 for multivariate) and Q is the
+    number of quantiles being forecasted for each output variable dimension.
+    **This assumes that each output variable has the SAME set of quantiles being
+    forecasted. If you want to use only a susbet of quantiels for optimization
+    then provide a mask tensor into the optimization function to exclude those
+    quantiles. However, here every quantile will be predicted.
+    
+    d_hidden - int. Hidden size dimension of h and c of LSTM
+    
+    n_layers - int. Number of layers
+    
+    
+    Derived params:
+    d_input - int. Is the full input size to each step of the decoder, which
+    for a given timestep t, concatenates the future features associated with 
+    timestep t, with the predicted outputs from timestep t-1 (of size M*Q).
+    
+    **d_input should be same as encoder
+    
+    
     """
-    def __init__(self, d_output, d_input, d_hidden, n_layers, p_dropout_decoder):
+    def __init__(self, M, Q, d_future_features, d_hidden, n_layers, p_dropout_decoder):
         super().__init__()
         # Params
-        self.d_input = d_input
-        self.d_output = d_output
+        #future_features is [batch x d_future_features], where
+        self.d_future_features = d_future_features
+        self.M = M #if univariate is 1, in general is M for multivariate output distribution
+        self.Q = Q #is number of quantiles to predict (assumed same for each of the M variables [but subsets can be masked in loss function])
         self.d_hidden = d_hidden
         self.n_layers = n_layers
+        #Derived params:
+        self.d_output = self.M * self.Q
+        self.d_input = self.d_future_features + self.M
         # Layers
-        self.recurrence = nn.LSTM(d_output, d_hidden, n_layers, batch_first=True, dropout=p_dropout_decoder)
-        self.linear = nn.Linear(d_hidden, d_output)
+        self.recurrence = nn.LSTM(self.d_input, self.d_hidden, self.n_layers, batch_first=True, dropout=p_dropout_decoder)
+        self.linear_out_predict = nn.Linear(self.d_hidden, self.d_output)
+        #self.linear_out_next_in = nn.Linear(self.d_output, self.M) #to project all quantile information back into size of point estimates, for next timestep
     def forward(self, inp, h, c):
+        print('self.d_output', self.d_output)
+        print('self.d_input', self.d_input)
+        print('self.d_future_features', self.d_future_features)
+        print('self.M', self.M)
+        print('inp.shape, h.shape, c.shape', inp.shape, h.shape, c.shape)
+        #inp is the concatenated tensor of future features with the M recursively predicted outputs for previous timestep of the M-dim multivariate series
         output, (h, c) = self.recurrence(inp, (h, c))
-        y = self.linear(output.squeeze(0))
-        return y, h, c
+        y_out = self.linear_out_predict(output.squeeze(0))
+        point_inds = [i for i in range(self.M)] #!!!!!!! indices corresponding to point estimates of the M variables in multivariable forecasting case. If doing quantiles, could just assume 0:M indices is pt. estimates.
+        y_next = y_out[:,:,point_inds] #slice the y_out to get only the elements corresponding to the point estimates
+        print('y_out.shape, y_next.shape', y_out.shape, y_next.shape)
+        return y_out, y_next, h, c

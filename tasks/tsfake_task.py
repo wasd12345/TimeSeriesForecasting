@@ -234,12 +234,25 @@ class TSFakeDataset(Dataset):
         for kk, vv in attributes.items():
             print(kk, vv)
     
-    def get_number_of_features(self):
+    def get_n_input_features(self):
         """
         Get number of features
         """
-        self.number_features = 1 #For this fake data, just series of scalars, i.e. no multivariable time series, just univariate.
-        return self.number_features
+        #For this fake data, just a single univariate series (not multivariable)
+        #and not using any other features (e.g. timestamps or external features)
+        #so just = 1
+        self.n_input_features = 1
+        return self.n_input_features
+    
+    def get_n_future_features(self):
+        """
+        Get number of features
+        """
+        #For this fake data, no features used in future (e.g. no future
+        #timestamp features), so just = 0
+        self.n_future_features = 0
+        return self.n_future_features
+    
     
     def get_number_missing_features(self, idx):
         """

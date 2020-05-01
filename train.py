@@ -28,7 +28,7 @@ import tasks.periodphase_task as periodphase_task
 
 
 
-
+ssssssssss = 0
 # =============================================================================
 # PARAMETERS
 # =============================================================================
@@ -45,28 +45,28 @@ HORIZON_SIZE_VALIDATION_MIN_MAX = [7,25] #HORIZON for validation. E.g.
 
 #Performance Metrics / Optimization metric
 #The actual function used for optimizing the parameters. Provide the name of one key in the dict TRAINING_METRICS_TRACKED                            
-OPTIMIZATION_FUNCTION_NAME = 'quantile_loss'#'SMAPE'#'q45_point_est'#'SMAPE'
+OPTIMIZATION_FUNCTION_NAME = 'SMAPE'#'quantile_loss'#'SMAPE'#'q45_point_est'#'SMAPE'
 QUANTILES_LIST = [.45, .5] #[.05, .25, .45, .5, .55, .75, .95] #!!!!!!!!!!!!for now just use same quantiles for all quantile metrics but in general can differ
-#Format is: '{metric_name}' : ({function}, {dict of kwargs})
-TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, {}),
-                            'SMAPE':(SMAPE, {}),
-                            'MAPE':(MAPE, {}),
-                            'bias':(bias, {}),
-                            'pearson_r':(pearson_r, {}),
-                            'mutual_information':(mutual_information, {}),
-                            'quantile_loss':(quantile_loss, {'quantiles':QUANTILES_LIST+[.95]}),
-                            'q50_point_est':(quantile_loss, {'quantiles':[.50]})
-                            # 'l1_loss':(F.l1_loss, {}) #Just to compare to 50q pinball loss to make sure is same
+#Format is: f'{metric name}' : ({function}, {loss indices list}, {dict of kwargs})
+TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
+                            'SMAPE':(SMAPE, [0], {}),
+                            'MAPE':(MAPE, [0], {}),
+                            'bias':(bias, [0], {}),
+                            'pearson_r':(pearson_r, [0], {}),
+                            'mutual_information':(mutual_information, [0], {}),
+                            # 'quantile_loss':(quantile_loss, {'quantiles':QUANTILES_LIST+[.95], 'loss_inds':ssssssssss}),
+                            # 'q50_point_est':(quantile_loss, {'quantiles':[.50], 'loss_inds':ssssssssss})
+                            # 'l1_loss':(F.l1_loss, [], {}) #Just to compare to 50q pinball loss to make sure is same
                             }
 #In general doesn't have to be same as training, but for now, loss plotting scode assumes it is
-VALIDATION_METRICS_TRACKED = {'mse_loss':(F.mse_loss, {}),
-                            'SMAPE':(SMAPE, {}),
-                            'MAPE':(MAPE, {}),
-                            'bias':(bias, {}),
-                            'pearson_r':(pearson_r, {}),
-                            'mutual_information':(mutual_information, {}),
-                            'quantile_loss':(quantile_loss, {'quantiles':QUANTILES_LIST+[.75]}),
-                            'q60_point_est':(quantile_loss, {'quantiles':[.60]})
+VALIDATION_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
+                            'SMAPE':(SMAPE, [0], {}),
+                            'MAPE':(MAPE, [0], {}),
+                            'bias':(bias, [0], {}),
+                            'pearson_r':(pearson_r, [0], {}),
+                            'mutual_information':(mutual_information, [0], {}),
+                            # 'quantile_loss':(quantile_loss, {'quantiles':QUANTILES_LIST+[.75], 'loss_inds':ssssssssss}),
+                            # 'q60_point_est':(quantile_loss, {'quantiles':[.60], 'loss_inds':ssssssssss})
                             }
 
 # Model params
@@ -127,7 +127,7 @@ if TASK == 'periodphase':
     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True, num_workers=NUM_WORKERS)
     val_set = periodphase_task.periodphaseDataset(VAL_PATH, history_span, Y_COLNAME)
     val_dl = DataLoader(val_set, batch_size=BS_0__val)
-    INPUT_SIZE = train_set.get_number_of_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
+    INPUT_SIZE = train_set.get_n_input_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
 
 
 
@@ -143,11 +143,11 @@ elif TASK == 'tsfake':
     #val_set = tsfake_task.TSFakeDataset(VAL_PATH, 70, 15, 333)
     val_set = tsfake_task.TSFakeDataset(VAL_PATH, 66, 14, 4) #!!!!!!!!!For now testing use same val sizes as training, since testing using fixed size dummy MLP needs always same dims as training
     val_dl = DataLoader(val_set, batch_size=BS_0__val, shuffle=True)
-    INPUT_SIZE = train_set.get_number_of_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
-
+    INPUT_SIZE = train_set.get_n_input_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
+    D_FUTURE_FEATURES = train_set.get_n_future_features() #Number of future features. E.g. timestamp related features on horizon timesteps
+    #should assert D_FUTURE_FEATURES = INPUT_SIZE - M
 else:
     raise Exception(f'"{TASK}" TASK not implemented yet')
-    #INPUT_SIZE = number of features for this task
 
 
     
@@ -158,13 +158,22 @@ if MODEL == 'DummyMLP':
 elif MODEL == 'RecurrentEncoderDecoder':
     N_LAYERS = 2#3
     D_HIDDEN = 32
-    D_OUTPUT = 1 #Since right now just test with univariate regression
-    BIDIRECTIONAL = False #False #True #Use bidirectional encoder
+    M_MULTIVARIATE = 1 #Since right now just test with univariate regression
+    Q = 4 #if doing only 1 quantile
+    BIDIRECTIONAL_ENC = False #False #True #Use bidirectional encoder
     P_DROPOUT_ENCODER = 0.#.25
     P_DROPOUT_DECODER = 0.#.25
-    enc = RecEncDec.Encoder(INPUT_SIZE, D_HIDDEN, N_LAYERS, BIDIRECTIONAL, P_DROPOUT_ENCODER)
-    dec = RecEncDec.Decoder(D_OUTPUT, INPUT_SIZE, D_HIDDEN, N_LAYERS, P_DROPOUT_DECODER)
-    model = RecEncDec.RecurrentEncoderDecoder(enc, dec).to(device)    
+    enc_dec_params = {'input_size':INPUT_SIZE,
+                      'd_hidden':D_HIDDEN,
+                      'M':M_MULTIVARIATE,
+                      'Q':Q,
+                      'd_future_features':D_FUTURE_FEATURES,
+                      'n_layers':N_LAYERS,
+                      'bidirectional_encoder':BIDIRECTIONAL_ENC,
+                      'p_dropout_encoder':P_DROPOUT_ENCODER,
+                      'p_dropout_decoder':P_DROPOUT_DECODER
+                      }
+    model = RecEncDec.RecurrentEncoderDecoder(**enc_dec_params).to(device)    
     
 # elif MODEL == 'dsrnn':
 #     model = dsrnn(...)
@@ -283,8 +292,18 @@ for epoch in range(MAX_EPOCHS):
         #then would have to modify below ....
         for name, function_tuple in TRAINING_METRICS_TRACKED.items():
             function = function_tuple[0]
-            kwargs = function_tuple[1]
-            train_loss = function(y_pred, Y, **kwargs)
+            loss_inds = function_tuple[1]
+            kwargs = function_tuple[2]
+            #When dealing with multivariate output, and quantile forecasting, may not use all outputs for all losees.
+            #E.g. maybe use 0 index for the point estimate but other indices for quantile loss
+            #Also, indices can be REused. If e.g. use a given index for both a point estimate and a 50th percentile estimate,
+            #or if a point estimate index is resued for multiple point estimate loss functions (e.g. both SMAPE and MSELoss).
+            #However, in the latter case, better to define a weighted combination of the different losses, and use it as one
+            #of the cutom loss functions in the TRAINING_METRICS_TRACKED dict (and also set as the OPTIMIZATION_FUNCTION_NAME)
+            #format is [batch x T_horizon x output size]
+            y_pred_this_loss = y_pred[:,:,loss_inds]
+            
+            train_loss = function(y_pred_this_loss, Y, **kwargs)
             # losses = [ii.item() for ii in train_loss]
             logger.losses_dict['training'][name].append(train_loss.tolist())
             print(f'training batch {bb}, {name}: {train_loss.tolist()}')
@@ -353,19 +372,26 @@ for epoch in range(MAX_EPOCHS):
             y_pred = model(X, Y, val_set.horizon_span)
             for name, function_tuple in VALIDATION_METRICS_TRACKED.items():
                 function = function_tuple[0]
-                kwargs = function_tuple[1]
-                val_loss = function(y_pred, Y, **kwargs)
+                loss_inds = function_tuple[1]
+                kwargs = function_tuple[2]
+                y_pred_this_loss = y_pred[:,:,loss_inds]  
+                val_loss = function(y_pred_this_loss, Y, **kwargs)
                 logger.losses_dict['validation'][name].extend([val_loss.tolist()])
                 print(f'validation batch {bb}, {name}: {val_loss.tolist()}')
         
-            #Print a few examples to compare
-            plot_regression_scatterplot(y_pred.view(-1), Y.view(-1), logger.output_dir, logger.n_epochs_completed)
+
             
             #Plot ONE randomly chosen time series. History, and prediction along with ground truth future:
             INDEX = torch.randint(0,X.shape[0],[1],dtype=int).item()
-            plot_predictions(X[INDEX], Y[INDEX], y_pred[INDEX], logger.output_dir, logger.n_epochs_completed)
-            # print(y_pred[:10])
-            # print(Y[:10])
+            #For multivariate case, just treat each variable independently for scatterplots and correlations:
+            
+            #!!!!!!!!!!! assuming that first 0:M indices are the point estimates (remainder can be quantiles)
+            multivar_inds = [mm for mm in range(M_MULTIVARIATE)]
+            for nn, MM in enumerate(multivar_inds): 
+                plot_regression_scatterplot(y_pred[:,:,MM].view(-1), Y[:,:,MM].view(-1), logger.output_dir, logger.n_epochs_completed, nn)
+                plot_predictions(X[INDEX,:,MM], Y[INDEX,:,MM], y_pred[INDEX,:,MM], logger.output_dir, logger.n_epochs_completed, nn)
+                # print(y_pred[:10])
+                # print(Y[:10])
             
             print()            
             
