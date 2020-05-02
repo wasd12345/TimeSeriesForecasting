@@ -98,18 +98,18 @@ class Logger():
             #For this quantile loss, get the quantiles used for training, validation:
             q_train = []
             if loss_name in self.training_metrics_tracked:
-                q_train = self.training_metrics_tracked[loss_name][1]['quantiles']
+                q_train = self.training_metrics_tracked[loss_name][2]['quantiles']
                 
             q_val = []
             if loss_name in self.validation_metrics_tracked:
-                q_val = self.validation_metrics_tracked[loss_name][1]['quantiles']
+                q_val = self.validation_metrics_tracked[loss_name][2]['quantiles']
                 
             all_q = set(q_train).union(set(q_val))
             print(all_q)
             for qq in all_q:
                 plt.figure()
                 plt.title(f'Train & Validation {loss_name} q={qq}', fontsize=20)            
-                if (loss_name in self.training_metrics_tracked) and (qq in self.training_metrics_tracked[loss_name][1]['quantiles']):
+                if (loss_name in self.training_metrics_tracked) and (qq in self.training_metrics_tracked[loss_name][2]['quantiles']):
                     x_train = np.cumsum(self.batchsizes['training'])
                     _ = self.losses_dict['training'][loss_name]
                     ind = q_train.index(qq)
@@ -119,7 +119,7 @@ class Logger():
                     y_train_MA = pd.DataFrame(y_train).ewm(span=5,adjust=False).mean().values.flatten()
                     plt.plot(x_train, y_train, marker='o', color='k', linestyle='None', alpha=.3, label='Train')
                     plt.plot(x_train, y_train_MA, color='k', label='Train Ave')            
-                if (loss_name in self.validation_metrics_tracked) and (qq in self.validation_metrics_tracked[loss_name][1]['quantiles']):
+                if (loss_name in self.validation_metrics_tracked) and (qq in self.validation_metrics_tracked[loss_name][2]['quantiles']):
                     x_val = self.n_exs_cumulative_per_epoch
                     _ = self.losses_dict['validation'][loss_name]
                     ind = q_val.index(qq)

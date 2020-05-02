@@ -59,17 +59,21 @@ def quantile_loss(pred, true, quantiles, mask=None, weights=None):
     returns a list of the mean pinball loss for each quantile q
     (mean is over all BATCHES and TIMESTEPS)
     
+    pred.shape is [batchsize x T x Q ], where  is number of quantiles
+    true.shape is [batchsize x T x 1]
     
+
     mask - mask tensor to ignore certain elements from optimization
     / vs.
     weights - weights tensor to weight different elements for optimization
     
     """
-    mean_pinball = []
-    for nn, q in enumerate(quantiles):
-        pinball = q*F.relu(true - pred) + (1.-q)*F.relu(pred - true)
-        mean_pinball.append(pinball.mean())
-    mean_pinball = torch.cat([i.reshape(-1) for i in mean_pinball])
+    
+    assert(len(quantiles)==pred.shape[2])
+    
+    Q = torch.cat([q*torch.ones_like(true) for q in quantiles], dim=2)
+    pinball = Q*F.relu(true - pred) + (1.-Q)*F.relu(pred - true)
+    mean_pinball = pinball.mean(axis=[0,1])
     return mean_pinball
 
 def huber_quantile_loss():

@@ -28,7 +28,6 @@ import tasks.periodphase_task as periodphase_task
 
 
 
-ssssssssss = 0
 # =============================================================================
 # PARAMETERS
 # =============================================================================
@@ -38,14 +37,10 @@ TORCH_SEED = 12345
 
 # Task params
 TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
-HISTORY_SIZE_TRAINING_MIN_MAX = [20,75] #[min,max] of allowed range during training. For each batch, an int in [min,max] is chosen u.a.r. as the history size
-HORIZON_SIZE_TRAINING_MIN_MAX = [7,30] #same idea but for the horizon size
-HISTORY_SIZE_VALIDATION_MIN_MAX = [20,70] #Same idea but the HISTORY for validation
-HORIZON_SIZE_VALIDATION_MIN_MAX = [7,25] #HORIZON for validation. E.g. 
 
 #Performance Metrics / Optimization metric
 #The actual function used for optimizing the parameters. Provide the name of one key in the dict TRAINING_METRICS_TRACKED                            
-OPTIMIZATION_FUNCTION_NAME = 'SMAPE'#'quantile_loss'#'SMAPE'#'q45_point_est'#'SMAPE'
+OPTIMIZATION_FUNCTION_NAME = 'quantile_loss'#'quantile_loss'#'SMAPE'#'q45_point_est'#'SMAPE'
 QUANTILES_LIST = [.45, .5] #[.05, .25, .45, .5, .55, .75, .95] #!!!!!!!!!!!!for now just use same quantiles for all quantile metrics but in general can differ
 #Format is: f'{metric name}' : ({function}, {loss indices list}, {dict of kwargs})
 TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
@@ -54,7 +49,7 @@ TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
                             'bias':(bias, [0], {}),
                             'pearson_r':(pearson_r, [0], {}),
                             'mutual_information':(mutual_information, [0], {}),
-                            # 'quantile_loss':(quantile_loss, {'quantiles':QUANTILES_LIST+[.95], 'loss_inds':ssssssssss}),
+                            'quantile_loss':(quantile_loss, [1,2,3], {'quantiles':QUANTILES_LIST+[.95]}), #!!!!!!!!!must have indices list in order corresponding to the listy of quantiles
                             # 'q50_point_est':(quantile_loss, {'quantiles':[.50], 'loss_inds':ssssssssss})
                             # 'l1_loss':(F.l1_loss, [], {}) #Just to compare to 50q pinball loss to make sure is same
                             }
@@ -85,6 +80,10 @@ MODEL = 'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models
 # META - learn the params via metalearning
 
 # Training params
+HISTORY_SIZE_TRAINING_MIN_MAX = [20,75] #[min,max] of allowed range during training. For each batch, an int in [min,max] is chosen u.a.r. as the history size
+HORIZON_SIZE_TRAINING_MIN_MAX = [7,30] #same idea but for the horizon size
+HISTORY_SIZE_VALIDATION_MIN_MAX = [20,70] #Same idea but the HISTORY for validation
+HORIZON_SIZE_VALIDATION_MIN_MAX = [7,25] #HORIZON for validation
 MAX_EPOCHS = 200 #89
 # EARLY_STOPPING_K = 3 #None #If None, don't use early stopping. If int, stop if validation loss in at least one of the most recent K epochs is not less than the K-1th last epoch
 #!!!!!!!!!!!! for now assuming the loss metric is the one being optimized
@@ -133,8 +132,8 @@ if TASK == 'periodphase':
 
 
 elif TASK == 'tsfake':
-    TRAIN_PATH = os.path.join('data', 'tsfake', 'train_sinusoid_noisy.csv')#f'tsfake-1000-len-400-train.csv') #!!!!!!!!!!!!!!!!!
-    VAL_PATH = os.path.join('data', 'tsfake', 'val_sinusoid_noisy.csv')#f'tsfake-256-len-400-val.csv')#!!!!!!!!!!!!!!!!!
+    TRAIN_PATH = os.path.join('data', 'tsfake', 'train_sinusoid_noisy_trend.csv')#f'tsfake-1000-len-400-train.csv') #!!!!!!!!!!!!!!!!!
+    VAL_PATH = os.path.join('data', 'tsfake', 'val_sinusoid_noisy_trend.csv')#f'tsfake-256-len-400-val.csv')#!!!!!!!!!!!!!!!!!
     history_span = 66 #!!!!!should randomly vary over training
     horizon_span = 14 #!!!!!rand
     history_start = 2 #!!!!!!keeping in mind 0 indexing, so start=K means K+1 th timestep, i.e. it is legit to have start=0
@@ -146,6 +145,7 @@ elif TASK == 'tsfake':
     INPUT_SIZE = train_set.get_n_input_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
     D_FUTURE_FEATURES = train_set.get_n_future_features() #Number of future features. E.g. timestamp related features on horizon timesteps
     #should assert D_FUTURE_FEATURES = INPUT_SIZE - M
+    N_MULTIVARIATE = train_set.get_n_multivariate() #Since right now just test with univariate regression
 else:
     raise Exception(f'"{TASK}" TASK not implemented yet')
 
@@ -158,15 +158,14 @@ if MODEL == 'DummyMLP':
 elif MODEL == 'RecurrentEncoderDecoder':
     N_LAYERS = 2#3
     D_HIDDEN = 32
-    M_MULTIVARIATE = 1 #Since right now just test with univariate regression
-    Q = 4 #if doing only 1 quantile
+    Q_QUANTILES = 7 #if doing only 1 quantile
     BIDIRECTIONAL_ENC = False #False #True #Use bidirectional encoder
     P_DROPOUT_ENCODER = 0.#.25
     P_DROPOUT_DECODER = 0.#.25
     enc_dec_params = {'input_size':INPUT_SIZE,
                       'd_hidden':D_HIDDEN,
-                      'M':M_MULTIVARIATE,
-                      'Q':Q,
+                      'M':N_MULTIVARIATE,
+                      'Q':Q_QUANTILES,
                       'd_future_features':D_FUTURE_FEATURES,
                       'n_layers':N_LAYERS,
                       'bidirectional_encoder':BIDIRECTIONAL_ENC,
@@ -283,7 +282,7 @@ for epoch in range(MAX_EPOCHS):
         #If don't need teacher forcing(not implemented yet anyway), then can ignore Y
         #if the model works for variable size horizons, must specify what horizon size to use:
         y_pred = model(X, Y, train_set.horizon_span)
-        print(y_pred.shape)
+        print('y_pred.shape', y_pred.shape)
         
         #For now just optimize on single loss function even when tracking multiple functions.
         #Can combine functions by just defining a new combined function in the metrics.py script, then add that function to TRAINING_METRICS_TRACKED
@@ -386,7 +385,7 @@ for epoch in range(MAX_EPOCHS):
             #For multivariate case, just treat each variable independently for scatterplots and correlations:
             
             #!!!!!!!!!!! assuming that first 0:M indices are the point estimates (remainder can be quantiles)
-            multivar_inds = [mm for mm in range(M_MULTIVARIATE)]
+            multivar_inds = [mm for mm in range(N_MULTIVARIATE)]
             for nn, MM in enumerate(multivar_inds): 
                 plot_regression_scatterplot(y_pred[:,:,MM].view(-1), Y[:,:,MM].view(-1), logger.output_dir, logger.n_epochs_completed, nn)
                 plot_predictions(X[INDEX,:,MM], Y[INDEX,:,MM], y_pred[INDEX,:,MM], logger.output_dir, logger.n_epochs_completed, nn)

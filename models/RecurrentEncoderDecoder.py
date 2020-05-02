@@ -104,7 +104,7 @@ class RecurrentEncoderDecoder(nn.Module):
             # # inp = self.connector(inp)
         
         
-        print('inp.shape', inp.shape)
+        # print('inp.shape', inp.shape)
         # Predict as many timesteps into the future as needed
         # (will vary during training, but each batch will have same length to
         # save wasted computation from padding and predicting on padded values)
@@ -198,15 +198,15 @@ class Decoder(nn.Module):
         self.linear_out_predict = nn.Linear(self.d_hidden, self.d_output)
         #self.linear_out_next_in = nn.Linear(self.d_output, self.M) #to project all quantile information back into size of point estimates, for next timestep
     def forward(self, inp, h, c):
-        print('self.d_output', self.d_output)
-        print('self.d_input', self.d_input)
-        print('self.d_future_features', self.d_future_features)
-        print('self.M', self.M)
-        print('inp.shape, h.shape, c.shape', inp.shape, h.shape, c.shape)
+        # print('self.d_output', self.d_output)
+        # print('self.d_input', self.d_input)
+        # print('self.d_future_features', self.d_future_features)
+        # print('self.M', self.M)
+        # print('inp.shape, h.shape, c.shape', inp.shape, h.shape, c.shape)
         #inp is the concatenated tensor of future features with the M recursively predicted outputs for previous timestep of the M-dim multivariate series
         output, (h, c) = self.recurrence(inp, (h, c))
         y_out = self.linear_out_predict(output.squeeze(0))
         point_inds = [i for i in range(self.M)] #!!!!!!! indices corresponding to point estimates of the M variables in multivariable forecasting case. If doing quantiles, could just assume 0:M indices is pt. estimates.
         y_next = y_out[:,:,point_inds] #slice the y_out to get only the elements corresponding to the point estimates
-        print('y_out.shape, y_next.shape', y_out.shape, y_next.shape)
+        # print('y_out.shape, y_next.shape', y_out.shape, y_next.shape)
         return y_out, y_next, h, c
