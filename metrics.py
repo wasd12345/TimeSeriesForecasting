@@ -33,6 +33,7 @@ def MAPE(pred, true):
     """
     mean unweughted MAPE. I.e. all timesteps of all series in batch are weighted equally.
     """
+    # print(pred.shape, true.shape)
     EPSILON = 10e-5
     denom = torch.abs(true)
     #!!!!!!!!!! due to definition of MAPE, this can give infs if time series has true=0, so consider using other metric
@@ -62,6 +63,10 @@ def quantile_loss(pred, true, quantiles, mask=None, weights=None):
     pred.shape is [batchsize x T x Q ], where  is number of quantiles
     true.shape is [batchsize x T x 1]
     
+    (in the multivariate case, this loss function is called inside a for loop
+     that loops over each of the M dimensions of the multivariate output, so
+     even in the multivariate case, the shapes of pred and true are the same
+     as in the univariate case)
 
     mask - mask tensor to ignore certain elements from optimization
     / vs.

@@ -3,6 +3,7 @@
 import os
 import time
 from datetime import datetime
+from shutil import copy
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -40,7 +41,7 @@ TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction t
 
 #Performance Metrics / Optimization metric
 #The actual function used for optimizing the parameters. Provide the name of one key in the dict TRAINING_METRICS_TRACKED                            
-OPTIMIZATION_FUNCTION_NAME = 'quantile_loss'#'quantile_loss'#'SMAPE'#'q45_point_est'#'SMAPE'
+OPTIMIZATION_FUNCTION_NAME = 'SMAPE'#'quantile_loss'#'SMAPE'#'q45_point_est'#'SMAPE'
 QUANTILES_LIST = [.45, .5] #[.05, .25, .45, .5, .55, .75, .95] #!!!!!!!!!!!!for now just use same quantiles for all quantile metrics but in general can differ
 #Format is: f'{metric name}' : ({function}, {loss indices list}, {dict of kwargs})
 TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
@@ -49,7 +50,7 @@ TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
                             'bias':(bias, [0], {}),
                             'pearson_r':(pearson_r, [0], {}),
                             'mutual_information':(mutual_information, [0], {}),
-                            'quantile_loss':(quantile_loss, [1,2,3], {'quantiles':QUANTILES_LIST+[.95]}), #!!!!!!!!!must have indices list in order corresponding to the listy of quantiles
+                            'quantile_loss':(quantile_loss, [1,2], {'quantiles':QUANTILES_LIST}), #!!!!!!!!!must have indices list in order corresponding to the listy of quantiles
                             # 'q50_point_est':(quantile_loss, {'quantiles':[.50], 'loss_inds':ssssssssss})
                             # 'l1_loss':(F.l1_loss, [], {}) #Just to compare to 50q pinball loss to make sure is same
                             }
@@ -60,8 +61,7 @@ VALIDATION_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
                             'bias':(bias, [0], {}),
                             'pearson_r':(pearson_r, [0], {}),
                             'mutual_information':(mutual_information, [0], {}),
-                            # 'quantile_loss':(quantile_loss, {'quantiles':QUANTILES_LIST+[.75], 'loss_inds':ssssssssss}),
-                            # 'q60_point_est':(quantile_loss, {'quantiles':[.60], 'loss_inds':ssssssssss})
+                            'quantile_loss':(quantile_loss, [1,2], {'quantiles':QUANTILES_LIST}),
                             }
 
 # Model params
@@ -127,38 +127,35 @@ if TASK == 'periodphase':
     val_set = periodphase_task.periodphaseDataset(VAL_PATH, history_span, Y_COLNAME)
     val_dl = DataLoader(val_set, batch_size=BS_0__val)
     INPUT_SIZE = train_set.get_n_input_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
-
-
-
-
 elif TASK == 'tsfake':
-    TRAIN_PATH = os.path.join('data', 'tsfake', 'train_sinusoid_noisy_trend.csv')#f'tsfake-1000-len-400-train.csv') #!!!!!!!!!!!!!!!!!
-    VAL_PATH = os.path.join('data', 'tsfake', 'val_sinusoid_noisy_trend.csv')#f'tsfake-256-len-400-val.csv')#!!!!!!!!!!!!!!!!!
+    n_multiv = 3 #Just for this synthetic task, make sure is same as created
+    n_ext_feats = 2
+    data_len = 400
+    TRAIN_PATH = os.path.join('data', f'{TASK}', f'tsfake-sinusoid-{n_multiv}vars-{n_ext_feats}feats-1000-len{data_len}-train.pt')
+    VAL_PATH = os.path.join('data', f'{TASK}', f'tsfake-sinusoid-{n_multiv}vars-{n_ext_feats}feats-256-len{data_len}-val.pt')
     history_span = 66 #!!!!!should randomly vary over training
     horizon_span = 14 #!!!!!rand
     history_start = 2 #!!!!!!keeping in mind 0 indexing, so start=K means K+1 th timestep, i.e. it is legit to have start=0
-    train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
+    train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, n_multiv, n_ext_feats, history_span, horizon_span, history_start)
     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True, num_workers=NUM_WORKERS)
-    #val_set = tsfake_task.TSFakeDataset(VAL_PATH, 70, 15, 333)
-    val_set = tsfake_task.TSFakeDataset(VAL_PATH, 66, 14, 4) #!!!!!!!!!For now testing use same val sizes as training, since testing using fixed size dummy MLP needs always same dims as training
+    val_set = tsfake_task.TSFakeDataset(VAL_PATH, n_multiv, n_ext_feats, 55, 12, 4)
     val_dl = DataLoader(val_set, batch_size=BS_0__val, shuffle=True)
-    INPUT_SIZE = train_set.get_n_input_features() #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
-    D_FUTURE_FEATURES = train_set.get_n_future_features() #Number of future features. E.g. timestamp related features on horizon timesteps
-    #should assert D_FUTURE_FEATURES = INPUT_SIZE - M
-    N_MULTIVARIATE = train_set.get_n_multivariate() #Since right now just test with univariate regression
 else:
     raise Exception(f'"{TASK}" TASK not implemented yet')
+#Regardless of dataset, should have these variables to track them:
+INPUT_SIZE = train_set.n_input_features #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
+D_FUTURE_FEATURES = train_set.n_external_features #Number of future features. E.g. timestamp related features on horizon timesteps
+N_MULTIVARIATE = train_set.n_multivariate
+assert(INPUT_SIZE == N_MULTIVARIATE + D_FUTURE_FEATURES)
 
-
-    
-
+       
 #Model (for now assuming you must choose a single model) !!!!!!!!
 if MODEL == 'DummyMLP':
     model = DummyMLP(history_span, INPUT_SIZE)
 elif MODEL == 'RecurrentEncoderDecoder':
     N_LAYERS = 2#3
     D_HIDDEN = 32
-    Q_QUANTILES = 7 #if doing only 1 quantile
+    Q_QUANTILES = 7
     BIDIRECTIONAL_ENC = False #False #True #Use bidirectional encoder
     P_DROPOUT_ENCODER = 0.#.25
     P_DROPOUT_DECODER = 0.#.25
@@ -172,7 +169,11 @@ elif MODEL == 'RecurrentEncoderDecoder':
                       'p_dropout_encoder':P_DROPOUT_ENCODER,
                       'p_dropout_decoder':P_DROPOUT_DECODER
                       }
-    model = RecEncDec.RecurrentEncoderDecoder(**enc_dec_params).to(device)    
+    model = RecEncDec.RecurrentEncoderDecoder(**enc_dec_params).to(device)  
+    model_run_params = {'horizon':train_set.horizon_span,
+                        'teacher_forcing':True,
+                        'teacher_forcing_prob':.25
+                        }
     
 # elif MODEL == 'dsrnn':
 #     model = dsrnn(...)
@@ -197,7 +198,9 @@ optim_function = TRAINING_METRICS_TRACKED[OPTIMIZATION_FUNCTION_NAME][0]
 START_TIME = datetime.now().strftime("%Y%m%d_%H%M%S")
 summary_text = f'START_TIME = {START_TIME}\n' + \
     f'TASK = {TASK}\n' + \
-    f'INPUT_SIZE (#features) = {INPUT_SIZE}\n' + \
+    f'N_MULTIVARIATE (#dimensions of the time series) = {N_MULTIVARIATE}\n' + \
+    f'D_FUTURE_FEATURES (#features) = {D_FUTURE_FEATURES}\n' + \
+    f'INPUT_SIZE (total #features of time series) = {INPUT_SIZE}\n' + \
     f'MODEL = {MODEL}\n' + \
     f'opt = {opt.__class__.__name__}\n' + \
     f'TRAINING_METRICS_TRACKED = {[of for of in TRAINING_METRICS_TRACKED]}\n' + \
@@ -205,17 +208,21 @@ summary_text = f'START_TIME = {START_TIME}\n' + \
     f'optim_function = {optim_function.__name__}\n'
 
 #Init the logger to track things / plot things, do metalearning
-logger = Logger(TASK, START_TIME, TRAINING_METRICS_TRACKED, VALIDATION_METRICS_TRACKED)
+logger = Logger(TASK, START_TIME, TRAINING_METRICS_TRACKED,
+                VALIDATION_METRICS_TRACKED, N_MULTIVARIATE, Q_QUANTILES)
 
 #Save summary text to log file
-#...
+print(summary_text)
 with open(os.path.join(logger.output_dir, 'summary_text.txt'), 'w') as gg:
     gg.write(summary_text)
-    
-    
-    
+
 #Save parameters to txt file
 #...
+    
+#For repeatability, copy this script to output dir
+THIS_SCRIPT_NAME = 'train.py'
+copy(THIS_SCRIPT_NAME, os.path.join(logger.output_dir, THIS_SCRIPT_NAME))
+
 
 
 # =============================================================================
@@ -256,15 +263,16 @@ for epoch in range(MAX_EPOCHS):
         Y = sample[1].float()
         
         # Transfer to GPU, if available:
-        X, Y = X.to(device), Y.to(device)
+        X = X.to(device)
+        # Y = Y.to(device)
+        Y_teacher = Y[:,:,:N_MULTIVARIATE].to(device)
+        future_features = Y[:,:,N_MULTIVARIATE:].to(device)
         
-        #!!!!!!!!!!! for now without changing the datasets themselves, since univariate, unsqueeze to be multivariate but with feature dim 1, to generalize:
-        #and use unsqueeze dim is 2 so that shape is LSTM format:
         # batch x length x features
-        X = torch.unsqueeze(X, 2)
-        Y = torch.unsqueeze(Y, 2)
-        print('X.shape', X.shape)
-        print('Y.shape', Y.shape)        
+        # print('X.shape', X.shape)
+        # print('Y.shape', Y.shape)        
+        # print('Y_teacher.shape', Y_teacher.shape)  
+        # print('future_features.shape', future_features.shape)          
 
         bsize = X.shape[0]
         logger.n_exs_cumulative_per_batch += bsize #Do this per training batch, since potentially have variable batchsize
@@ -281,8 +289,18 @@ for epoch in range(MAX_EPOCHS):
         # vs. for recurrent deocders, which may use teacher forcing.
         #If don't need teacher forcing(not implemented yet anyway), then can ignore Y
         #if the model works for variable size horizons, must specify what horizon size to use:
-        y_pred = model(X, Y, train_set.horizon_span)
-        print('y_pred.shape', y_pred.shape)
+        model_run_params = {}
+        if MODEL == 'RecurrentEncoderDecoder':
+            model_run_params = {'horizon_span':train_set.horizon_span,
+                                'teacher_forcing':True,
+                                'teacher_forcing_prob':.25
+                                }            
+        y_pred = model(X, future_features, Y_teacher, **model_run_params)
+        # print('y_pred.shape', y_pred.shape)
+    
+        #format is [batch x T_horizon x multivar x 1]
+        Y_teacher = torch.unsqueeze(Y_teacher, 3)
+        # print('Y_teacher.shape', Y_teacher.shape)
         
         #For now just optimize on single loss function even when tracking multiple functions.
         #Can combine functions by just defining a new combined function in the metrics.py script, then add that function to TRAINING_METRICS_TRACKED
@@ -290,6 +308,7 @@ for epoch in range(MAX_EPOCHS):
         #completely switching loss functions during training [via random, RL, meta, etc.],
         #then would have to modify below ....
         for name, function_tuple in TRAINING_METRICS_TRACKED.items():
+            # print(name)
             function = function_tuple[0]
             loss_inds = function_tuple[1]
             kwargs = function_tuple[2]
@@ -299,19 +318,47 @@ for epoch in range(MAX_EPOCHS):
             #or if a point estimate index is resued for multiple point estimate loss functions (e.g. both SMAPE and MSELoss).
             #However, in the latter case, better to define a weighted combination of the different losses, and use it as one
             #of the cutom loss functions in the TRAINING_METRICS_TRACKED dict (and also set as the OPTIMIZATION_FUNCTION_NAME)
-            #format is [batch x T_horizon x output size]
-            y_pred_this_loss = y_pred[:,:,loss_inds]
+            #format is [batch x T_horizon x multivar x quantiles]
+            y_pred_this_loss = y_pred[:,:,:,loss_inds]
+            # print('y_pred_this_loss.shape', y_pred_this_loss.shape)
             
-            train_loss = function(y_pred_this_loss, Y, **kwargs)
-            # losses = [ii.item() for ii in train_loss]
-            logger.losses_dict['training'][name].append(train_loss.tolist())
-            print(f'training batch {bb}, {name}: {train_loss.tolist()}')
+
+            #For each of the M multivariate output dimensions, get the loss:
+            # (track this individually for each dimension for analsysis, but
+            # use a weighted average for the actual loss function.
+            # E.g. with uniform weights for each of the M dimensions:
+            dim_weights = torch.ones(logger.n_multivariate)
+            dim_weights = dim_weights/torch.sum(dim_weights)
+            train_loss_combined = torch.zeros(1)
+            train_loss_tracker = []#torch.Tensor()
+            for ii, dim in enumerate(range(logger.n_multivariate)):
+                loss_this_dim = function(y_pred_this_loss[:,:,dim,:], Y_teacher[:,:,dim,:], **kwargs)
+                loss_this_dim = loss_this_dim.reshape((-1))
+                
+                #Reduce the loss function to a scalar. The point estimate losses
+                #will already be scalars but quantile_loss with Q>1 will be a 
+                #vector, so reduce here by doing weighted average.
+                #E.g. doing uniform weights:
+                q_weights = torch.ones_like(loss_this_dim)
+                q_weights = q_weights/torch.sum(q_weights)
+                
+                train_loss_combined += dim_weights[ii] * torch.dot(loss_this_dim, q_weights)
+                train_loss_tracker.append(loss_this_dim.tolist())
+                # train_loss_tracker = torch.cat((train_loss_tracker, loss_this_dim.data),dim=0)
+                print(f'training batch {bb}, {name}, dim{dim}: {loss_this_dim.tolist()}')
+                # print()
+
+            # train_loss_tracker is [batch x M x Q] in a nested lists format
+            logger.losses_dict['training'][name].append(train_loss_tracker)
+
             #If this is the single function that needs to be optimized
             if name == optim_function.__name__:
-                #use this ones arg so will work even if doing quantile loss w.r.t. multiple quantiles.
-                #(all 1's means equal weight to each quantile. Can adjust weights as necessary if desired)
-                #(and if only doing point estimates, this is equivalent to having no arg as in usual loss.backward() )
-                train_loss.backward(torch.ones(train_loss.shape))
+                #use this ones arg so will work even if doing:
+                #    - multivariate output
+                #    - and/or quantile_loss
+                #(all 1's means equal weight to each variable/quantile. Can adjust weights as necessary if desired)
+                #(and if only doing univariate point estimates, this is equivalent to having no arg as in usual loss.backward() )
+                train_loss_combined.backward(torch.ones(train_loss_combined.shape))
         
         #Gradient clipping, etc.
         GRADIENT_CLIPPING = False#True
@@ -326,17 +373,17 @@ for epoch in range(MAX_EPOCHS):
         #     ...
             
         opt.step()
-        print()
+        print('\n'*2)
         
+
     #To do per EPOCH changes, like diff history and horizon sizes, update for the next EPOCH:
     next_history = torch.randint(HISTORY_SIZE_TRAINING_MIN_MAX[0], HISTORY_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
     next_horizon = torch.randint(HORIZON_SIZE_TRAINING_MIN_MAX[0], HORIZON_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
     next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
     #!!!!!!!!!!! not updating properly #train_set.update_timespans(history_span=next_history, horizon_span=next_horizon, history_start=next_start)
-    train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, next_history, next_horizon, next_start)
+    train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, train_set.n_multivariate, train_set.n_external_features, next_history, next_horizon, next_start)
     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)#, num_workers=NUM_WORKERS)
 
-    
     elapsed_train_time = time.perf_counter() - t0
     logger.n_exs_per_epoch += [logger.n_exs_cumulative_per_batch] #done at the epoch level
     print(f'elapsed_train_time = {elapsed_train_time}')
@@ -346,7 +393,7 @@ for epoch in range(MAX_EPOCHS):
     # =============================================================================
     # Validation
     # =============================================================================
-    print('\n\n')
+    print('\n\n\n\n')
     print('Validation...\n')
     model.eval()
     val_batchsize_this_epoch = BS_0__val #For now just use fixed batchsize but could adjust dynamically as necessary
@@ -360,35 +407,61 @@ for epoch in range(MAX_EPOCHS):
             X = sample[0].float()
             Y = sample[1].float()
             X, Y = X.to(device), Y.to(device)
-            X = torch.unsqueeze(X, 2)
-            Y = torch.unsqueeze(Y, 2)
+            Y_gt = Y[:,:,:N_MULTIVARIATE]
+            future_features = Y[:,:,N_MULTIVARIATE:]
+            
+            #Y = Y.reshape(aaaaaaaaaaaaaa)
 
             bsize = X.shape[0]
             logger.batchsizes['validation'].extend([bsize])
             logger.n_exs_cumulative_per_epoch.extend([logger.n_exs_per_epoch[-1]]) #To use for validation loss plots. Value is repeated for each validation batch.
             
             # Run the forward pass:
-            y_pred = model(X, Y, val_set.horizon_span)
+            model_run_params = {}
+            if MODEL == 'RecurrentEncoderDecoder':
+                model_run_params = {'horizon_span':val_set.horizon_span,
+                                    'teacher_forcing':False,
+                                    'teacher_forcing_prob':None
+                                    }            
+            y_pred = model(X, future_features, Y_gt, **model_run_params)
+            Y_gt = torch.unsqueeze(Y_gt, 3)
+            # print('y_pred.shape', y_pred.shape)
             for name, function_tuple in VALIDATION_METRICS_TRACKED.items():
                 function = function_tuple[0]
                 loss_inds = function_tuple[1]
                 kwargs = function_tuple[2]
-                y_pred_this_loss = y_pred[:,:,loss_inds]  
-                val_loss = function(y_pred_this_loss, Y, **kwargs)
-                logger.losses_dict['validation'][name].extend([val_loss.tolist()])
-                print(f'validation batch {bb}, {name}: {val_loss.tolist()}')
-        
+                y_pred_this_loss = y_pred[:,:,:,loss_inds]
+                
+                #For each of the M multivariate output dimensions, get the loss:
+                # dim_weights = torch.ones(logger.n_multivariate)
+                # dim_weights = dim_weights/torch.sum(dim_weights)
+                # val_loss_combined = torch.zeros(1)
+                val_loss_tracker = []#torch.Tensor()
+                for ii, dim in enumerate(range(logger.n_multivariate)):
+                    loss_this_dim = function(y_pred_this_loss[:,:,dim,:], Y_gt[:,:,dim,:], **kwargs)
+                    loss_this_dim = loss_this_dim.reshape((-1))
+                    q_weights = torch.ones_like(loss_this_dim)
+                    q_weights = q_weights/torch.sum(q_weights)
+                    # val_loss_combined += dim_weights[ii] * torch.dot(loss_this_dim, q_weights)
+                    val_loss_tracker.append(loss_this_dim.tolist())
+                    # val_loss_tracker = torch.cat((val_loss_tracker, loss_this_dim.data),dim=0)
+                    print(f'validation batch {bb}, {name}, dim{dim}: {loss_this_dim.tolist()}')
+                    # print()
+    
+                # val_loss_tracker is [batch x M x Q] in a nested lists format
+                logger.losses_dict['validation'][name].append(val_loss_tracker)
 
-            
+
             #Plot ONE randomly chosen time series. History, and prediction along with ground truth future:
             INDEX = torch.randint(0,X.shape[0],[1],dtype=int).item()
             #For multivariate case, just treat each variable independently for scatterplots and correlations:
             
-            #!!!!!!!!!!! assuming that first 0:M indices are the point estimates (remainder can be quantiles)
-            multivar_inds = [mm for mm in range(N_MULTIVARIATE)]
+            #**The [batch x T x M x Q][0] indices are the point estimates (0th index along last axis)
+            # so use Y_gt[:,:,MM,0] and y_pred[:,:,MM,0]
+            multivar_inds = [mm for mm in range(logger.n_multivariate)]
             for nn, MM in enumerate(multivar_inds): 
-                plot_regression_scatterplot(y_pred[:,:,MM].view(-1), Y[:,:,MM].view(-1), logger.output_dir, logger.n_epochs_completed, nn)
-                plot_predictions(X[INDEX,:,MM], Y[INDEX,:,MM], y_pred[INDEX,:,MM], logger.output_dir, logger.n_epochs_completed, nn)
+                plot_regression_scatterplot(y_pred[:,:,MM,0].view(-1), Y_gt[:,:,MM,0].view(-1), logger.output_dir, logger.n_epochs_completed, nn)
+                plot_predictions(X[INDEX,:,MM], Y_gt[INDEX,:,MM,0], y_pred[INDEX,:,MM,0], logger.output_dir, logger.n_epochs_completed, nn)
                 # print(y_pred[:10])
                 # print(Y[:10])
             
@@ -402,7 +475,7 @@ for epoch in range(MAX_EPOCHS):
     next_history = torch.randint(HISTORY_SIZE_VALIDATION_MIN_MAX[0], HISTORY_SIZE_VALIDATION_MIN_MAX[1], [1], dtype=int).item()
     next_horizon = torch.randint(HORIZON_SIZE_VALIDATION_MIN_MAX[0], HORIZON_SIZE_VALIDATION_MIN_MAX[1], [1], dtype=int).item()
     next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
-    val_set = tsfake_task.TSFakeDataset(VAL_PATH, next_history, next_horizon, next_start)
+    val_set = tsfake_task.TSFakeDataset(VAL_PATH, val_set.n_multivariate, val_set.n_external_features, next_history, next_horizon, next_start)
     val_dl = DataLoader(val_set, batch_size=BS_0__val, shuffle=True)
             
     elapsed_val_time = time.perf_counter() - elapsed_train_time

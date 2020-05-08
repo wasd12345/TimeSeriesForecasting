@@ -20,11 +20,14 @@ class Logger():
     and evaluate training progress
     """
     
-    def __init__(self, task_name, start_time, training_metrics_tracked, validation_metrics_tracked):
+    def __init__(self, task_name, start_time, training_metrics_tracked, validation_metrics_tracked, n_multivariate, n_quantiles):
         self.task_name = task_name
         self.start_time = start_time
         self.training_metrics_tracked = training_metrics_tracked
         self.validation_metrics_tracked = validation_metrics_tracked
+        self.n_multivariate = n_multivariate
+        self.n_quantiles = n_quantiles
+        
         self.total_elapsed_time = 0
         self.n_epochs_completed = 0
         self.n_exs_cumulative_per_batch = 0 #Updated after every batch
@@ -33,6 +36,7 @@ class Logger():
         self.losses_dict = {'training':defaultdict(list), 'validation':defaultdict(list)} #!!!!! for now assuming only 1 model instead of ensemble of models
         self.batchsizes = {'training':[], 'validation':[]} #the list of batchsizes used during each epoch #!!!!!! assuming 1 model
         self.n_exs_cumulative_per_epoch = [] #Within an epoch, the cumulative number of training exs. Used for validation los plots. Should have repetition if have more than one validation batch.
+        
         self.learning_rates = {}  #per epoch, the learning rate used
         self.weights_biases = {} #per epoch
         self.gradient_magnitudes = {}
@@ -53,7 +57,10 @@ class Logger():
         self.losses_dict format is:
             {'training':{'SMAPE':[...], 'MAPE':[...]},
              'validation':{'SMAPE':[...], 'MAPE':[...]}}
-            i.e. for each metric, there is a list of the value of that metric, for each batch (ordered)
+            i.e. for each metric, there is a list of the value of that metric, for each batch (ordered).
+            Since doing multivariate and quantiles in tracking, the format is 3-nested list, i.e.:
+                    [batch x M x Q] -> [batch [M [Q]]]
+                
         """
         loss_names_set = set(self.losses_dict['training'].keys()).union(self.losses_dict['validation'].keys())
         
@@ -62,34 +69,36 @@ class Logger():
         
         quantile_losses_used = loss_names_set.intersection(QUANTILE_FORECASTING_LOSS_NAMES)
         point_est_losses_used = loss_names_set.difference(QUANTILE_FORECASTING_LOSS_NAMES)
-        print(quantile_losses_used)
-        print(point_est_losses_used)
         
         #Deal with the point estimate losses, and other single valued losses: (all non-quantile losses):
         for loss_name in point_est_losses_used:
-            plt.figure()
-            plt.title(f'Train & Validation {loss_name}', fontsize=20)            
-            #if loss_name in self.losses_dict['training']:
-            if loss_name in self.training_metrics_tracked:
-                x_train = np.cumsum(self.batchsizes['training'])
-                y_train = self.losses_dict['training'][loss_name]
-                #Moving average over metric during training:
-                #!!!!!!!!!!! since graphing per batch, (so last batch of epoch could have fewer exs), should really first weight by number of samples in batch....
-                y_train_MA = pd.DataFrame(y_train).ewm(span=5,adjust=False).mean().values.flatten()
-                plt.plot(x_train, y_train, marker='o', color='k', linestyle='None', alpha=.3, label='Train')
-                plt.plot(x_train, y_train_MA, color='k', label='Train Ave')            
-            if loss_name in self.validation_metrics_tracked:
-                x_val = self.n_exs_cumulative_per_epoch
-                y_val = self.losses_dict['validation'][loss_name]
-                #Moving average over metric during validation....
-                #since all batches of validation done after same amoutn of training, must merge values first 1 get single value per epoch, then do EMA
-                plt.plot(x_val, y_val, marker='s', color='r', linestyle='None', alpha=.3, label='Validation')
-            plt.xlabel('Cumulative Examples', fontsize=20)
-            plt.ylabel(f'{loss_name}', fontsize=20)
-            plt.legend(numpoints=1)
-            savepath = os.path.join(self.output_dir, f'metric__{loss_name}.png')
-            plt.savefig(savepath)
-            plt.close()
+            print(loss_name)
+            for dim in range(self.n_multivariate): #For each dimension, in the multivariate case:
+                plt.figure()
+                plt.title(f'Train & Validation {loss_name}, dim{dim}', fontsize=20)            
+                #if loss_name in self.losses_dict['training']:
+                if loss_name in self.training_metrics_tracked:
+                    x_train = np.cumsum(self.batchsizes['training'])
+                    y_train = self.losses_dict['training'][loss_name]
+                    y_train = [batch[dim][0] for batch in y_train]
+                    #Moving average over metric during training:
+                    #!!!!!!!!!!! since graphing per batch, (so last batch of epoch could have fewer exs), should really first weight by number of samples in batch....
+                    y_train_MA = pd.DataFrame(y_train).ewm(span=5,adjust=False).mean().values.flatten()
+                    plt.plot(x_train, y_train, marker='o', color='k', linestyle='None', alpha=.3, label='Train')
+                    plt.plot(x_train, y_train_MA, color='k', label='Train Ave')            
+                if loss_name in self.validation_metrics_tracked:
+                    x_val = self.n_exs_cumulative_per_epoch
+                    y_val = self.losses_dict['validation'][loss_name]
+                    y_val = [batch[dim][0] for batch in y_val]
+                    #Moving average over metric during validation....
+                    #since all batches of validation done after same amoutn of training, must merge values first 1 get single value per epoch, then do EMA
+                    plt.plot(x_val, y_val, marker='s', color='r', linestyle='None', alpha=.3, label='Validation')
+                plt.xlabel('Cumulative Examples', fontsize=20)
+                plt.ylabel(f'{loss_name}', fontsize=20)
+                plt.legend(numpoints=1)
+                savepath = os.path.join(self.output_dir, f'metric__{loss_name}_dim{dim}.png')
+                plt.savefig(savepath)
+                plt.close()
 
 
         #All quantile losses:
@@ -105,34 +114,37 @@ class Logger():
                 q_val = self.validation_metrics_tracked[loss_name][2]['quantiles']
                 
             all_q = set(q_train).union(set(q_val))
-            print(all_q)
+            # print(all_q)
             for qq in all_q:
-                plt.figure()
-                plt.title(f'Train & Validation {loss_name} q={qq}', fontsize=20)            
-                if (loss_name in self.training_metrics_tracked) and (qq in self.training_metrics_tracked[loss_name][2]['quantiles']):
-                    x_train = np.cumsum(self.batchsizes['training'])
-                    _ = self.losses_dict['training'][loss_name]
-                    ind = q_train.index(qq)
-                    y_train = [ii[ind] for ii in _]
-                    #Moving average over metric during training:
-                    #!!!!!!!!!!! since graphing per batch, (so last batch of epoch could have fewer exs), should really first weight by number of samples in batch....
-                    y_train_MA = pd.DataFrame(y_train).ewm(span=5,adjust=False).mean().values.flatten()
-                    plt.plot(x_train, y_train, marker='o', color='k', linestyle='None', alpha=.3, label='Train')
-                    plt.plot(x_train, y_train_MA, color='k', label='Train Ave')            
-                if (loss_name in self.validation_metrics_tracked) and (qq in self.validation_metrics_tracked[loss_name][2]['quantiles']):
-                    x_val = self.n_exs_cumulative_per_epoch
-                    _ = self.losses_dict['validation'][loss_name]
-                    ind = q_val.index(qq)
-                    y_val = [ii[ind] for ii in _]                    
-                    #Moving average over metric during validation....
-                    #since all batches of validation done after same amoutn of training, must merge values first 1 get single value per epoch, then do EMA
-                    plt.plot(x_val, y_val, marker='s', color='r', linestyle='None', alpha=.3, label='Validation')
-                plt.xlabel('Cumulative Examples', fontsize=20)
-                plt.ylabel(f'{loss_name}', fontsize=20)
-                plt.legend(numpoints=1)
-                savepath = os.path.join(self.output_dir, f'metric__{loss_name}_q{qq}.png')
-                plt.savefig(savepath)
-                plt.close()
+                for dim in range(self.n_multivariate): #For each dimension, in the multivariate case:
+                    plt.figure()
+                    plt.title(f'Train & Validation {loss_name},\ndim {dim}, q={qq}', fontsize=20)            
+                    if (loss_name in self.training_metrics_tracked) and (qq in self.training_metrics_tracked[loss_name][2]['quantiles']):
+                        x_train = np.cumsum(self.batchsizes['training'])
+                        gg = self.losses_dict['training'][loss_name]
+                        ind = q_train.index(qq)
+                        y_train = [batch[dim] for batch in gg]
+                        y_train = [ii[ind] for ii in y_train]
+                        #Moving average over metric during training:
+                        #!!!!!!!!!!! since graphing per batch, (so last batch of epoch could have fewer exs), should really first weight by number of samples in batch....
+                        y_train_MA = pd.DataFrame(y_train).ewm(span=5,adjust=False).mean().values.flatten()
+                        plt.plot(x_train, y_train, marker='o', color='k', linestyle='None', alpha=.3, label='Train')
+                        plt.plot(x_train, y_train_MA, color='k', label='Train Ave')            
+                    if (loss_name in self.validation_metrics_tracked) and (qq in self.validation_metrics_tracked[loss_name][2]['quantiles']):
+                        x_val = self.n_exs_cumulative_per_epoch
+                        gg = self.losses_dict['validation'][loss_name]
+                        ind = q_val.index(qq)
+                        y_val = [batch[dim] for batch in gg]
+                        y_val = [ii[ind] for ii in y_val]
+                        #Moving average over metric during validation....
+                        #since all batches of validation done after same amoutn of training, must merge values first 1 get single value per epoch, then do EMA
+                        plt.plot(x_val, y_val, marker='s', color='r', linestyle='None', alpha=.3, label='Validation')
+                    plt.xlabel('Cumulative Examples', fontsize=20)
+                    plt.ylabel(f'{loss_name}', fontsize=20)
+                    plt.legend(numpoints=1)
+                    savepath = os.path.join(self.output_dir, f'metric__{loss_name}_dim{dim}_q{qq}.png')
+                    plt.savefig(savepath)
+                    plt.close()
 
 
 

@@ -16,32 +16,42 @@ import sys
 
 
 def create_dataset(
-        train_size,
-        val_size,
+        train_n_examples,
+        val_n_examples,
         data_len=400,
         x_max = 10.,
-        period=5.,
-        phase=1.,
+        n_multivariate=3,
+        n_external_features=2,
         seed=None,        
         ):
     """
     Randomly generate a data set of sinusoids for a simple regression problem.
     
-    X = vector of time series input vals.
-    Y = vector of time series input vals.
+    X = vector of time series HISTORY vals.
+    Y = vector of time series HORIZON vals.
+    
+    **ASSUMPTIONS:
+        - during prediction (HORIZON), we will have the same features as during the training chunk (HISTORY)
+        - in the multivariate case we are predicting an M dimensional multivariate output for each timestep
+        - other than the multivariate time series, there are potentially other external features [e.g. could be features derived from timestamps if available, or other any relevant feature]
+        - So the total input feature dimension is (n_multivariate + n_external_features)
+        - and during prediction, we have access to the n_external_features features and will predict the n_multivariate-dimensional output at each timestep
+        
+    - For this synthetic data, when creating multivariate series, just take the original one and apply a random affine transofrmation to get the other dimensions of the series
+    
     """
     
     TASKNAME = 'tsfake'
     MODE = 'sinusoid' #'ramp'
-    INSERT_NANS = False#True
+    # INSERT_NANS = False#True
     
     data_dir = os.path.join('data',TASKNAME)
     
     if seed is not None:
         torch.manual_seed(seed)
     
-    train_name = '{}-{}-len-{}-train.csv'.format(TASKNAME, train_size, data_len)
-    val_name = '{}-{}-len-{}-val.csv'.format(TASKNAME, val_size, data_len)
+    train_name = '{}-{}-{}vars-{}feats-{}-len{}-train.pt'.format(TASKNAME, MODE, n_multivariate, n_external_features, train_n_examples, data_len)
+    val_name = '{}-{}-{}vars-{}feats-{}-len{}-val.pt'.format(TASKNAME, MODE, n_multivariate, n_external_features, val_n_examples, data_len)
     train_path = os.path.join(data_dir, train_name)
     val_path = os.path.join(data_dir, val_name)
     
@@ -53,40 +63,63 @@ def create_dataset(
     
     
     
-    for zz in zip([train_name, val_name], [train_size, val_size]):
+    for zz in zip([train_name, val_name], [train_n_examples, val_n_examples]):
         print('Creating data set for {}...'.format(zz[0]))
-        X_all = []
+        X_all = torch.zeros((zz[1], data_len, n_multivariate + n_external_features)) #[(all)batchsize x T x (Mvars + Nfeatures)]
         for i in trange(zz[1]):
             
             if MODE == 'sinusoid':
                 period = torch.rand(1).item()
                 phase = np.pi*torch.rand(1).item() #Only [0,pi] phases so well defined with only 1 possible offset 
+                slope = (2*(torch.rand(1) - .5)).item()/(x_max) #Have a random slope in [-1/data_len, 1/data_len]
                 x = torch.linspace(0., x_max, data_len)
+                trend = slope*x
                 x = torch.sin(2.*np.pi*x/period + phase)
-                x += .05*torch.randn(x.shape[0])
-                x = x.tolist()
+                x = x + trend
+                x += .05*torch.randn(x.shape[0]) #Additive noise
+                
             elif MODE == 'ramp':
                 #for debugging simplicity during dev, just do monotonic integer seqs:
-                x = [i for i in range(data_len)]
+                x = torch.arange(data_len)
             
-            # #Simulate some missing data by randomly assigning NaNs to ~ 5pct of values:
-            if INSERT_NANS:
-                P = .05
-                nan_inds = np.random.choice([0,1], data_len, replace=True, p=[1.-P,P])
-                x = [x[vv] if nan_inds[vv]==0 else np.nan for vv in range(len(x))]
+            #Make the M total variable dimensions by doing random affine transformations on original series:
+            for M in range(n_multivariate):
+                b = (2*(torch.rand(1) - .5)).item()
+                UU = 1.10
+                LL = .90
+                a = (UU-LL)*torch.rand(1) + LL
+                x_i = a*x + b
+                
+                # # #Simulate some missing data by randomly assigning NaNs to ~ 5pct of values:
+                # if INSERT_NANS:
+                #     P = .05
+                #     nan_inds = np.random.choice([0,1], data_len, replace=True, p=[1.-P,P])
+                #     x_i = [x[vv] if nan_inds[vv]==0 else np.nan for vv in range(len(x))]
+                
+                X_all[i,:,M] = x_i
+               
+                
+            # For real dataset, may use external features. Here, just add random noise to make useless features but to allow to work later on with real features:
+            X_all[i,:,n_multivariate:] = torch.rand(1, data_len, n_external_features)                
             
-            X_all.append(x)
             
-        #Intentionally put in examples of leading and trailing missing data NaNs:
-        if INSERT_NANS:
-            K1 = 10
-            K2 = 5
-            X_all[0][:K1] = [np.nan]*K1
-            X_all[1][-K2:] = [np.nan]*K2
+        # #Intentionally put in examples of leading and trailing missing data NaNs:
+        # if INSERT_NANS:
+        #     K1 = 10
+        #     K2 = 5
+        #     X_all[0][:K1] = [np.nan]*K1
+        #     X_all[1][-K2:] = [np.nan]*K2
+         
+        
+
             
-        df = pd.DataFrame(data=X_all)
-        out_path = os.path.join(data_dir, f'{MODE}_' + zz[0])
-        df.to_csv(out_path, index=False, header=None)
+        # print(X_all)
+        # print(X_all.shape)
+        # print(X_all[0,:])
+        # df = pd.DataFrame(data=X_all)
+        out_path = os.path.join(data_dir, zz[0])
+        # df.to_csv(out_path, index=False, header=None)
+        torch.save(X_all, out_path)
 
     print(train_path)
     print(val_path)
@@ -120,6 +153,8 @@ class TSFakeDataset(Dataset):
     """
 
     def __init__(self, dataset_path,
+                 n_multivariate,
+                 n_external_features,
                  history_span,
                  horizon_span,
                  history_start,
@@ -140,6 +175,9 @@ class TSFakeDataset(Dataset):
         super(TSFakeDataset, self).__init__()
         
         self.dataset_path = dataset_path
+        self.n_multivariate = n_multivariate
+        self.n_external_features = n_external_features
+        self.n_input_features = self.n_multivariate + self.n_external_features
         self.history_span = history_span
         self.horizon_span = horizon_span
         self.history_start = history_start #keeping in mind that this is 0 indexed
@@ -159,8 +197,9 @@ class TSFakeDataset(Dataset):
         #curriculum learning or similar:
         self.calculate_derived()
         
-        print('Loading data')
-        self.data_set = torch.tensor(pd.read_csv(self.dataset_path, header=None).values, dtype=float)
+        print(f'Loading data:\n{self.dataset_path}')
+        #self.data_set = torch.tensor(pd.read_csv(self.dataset_path, header=None).values, dtype=float)
+        self.data_set = torch.load(self.dataset_path)
         self.size = self.data_set.shape[0]
         
         
@@ -206,23 +245,39 @@ class TSFakeDataset(Dataset):
         ------ HISTORY --- | ----- HORIZON ------
         x1, x2, ...,   x_N,| x_N+1, ...,        x_N+M
         
+        where each given history side x_i is a vector with  #features = n_input_features,
+        but each horizon side x_j does not have the multivariate series itself known
         
+        so final shape of X is:
+            [T_history x n_input_features]
+        
+        and final shape of Y is:
+            [T_horizon x n_multivariate]
         """
-        XY = self.data_set[idx] #!!!!!!!!!!!!assuming univariate data
+        XY = self.data_set[idx]
         X = XY[self.history_start : self.history_end : self.history_stride]
         Y = XY[self.horizon_start : self.horizon_end : self.horizon_stride]
-        # print('X.shape', X.shape)
-        # print('Y.shape', Y.shape)
+        # (For this dataset, the first M features are the multivariable series to predict; 
+        # (the last F features are the external features [in this dataset just noise] )
+        assert(X.shape[1] == self.n_input_features)
+        assert(Y.shape[1] == self.n_input_features)
+        # Both X and Y should have same number of features.
+        # During training and inference, Y will always include the external features (e.g. known future information like timestamps)
+        # However, the first n_multivariate values are not know since this is the multivariate distribution we are trying to predict.
+        # But if we use teacher forcing during training, then for prediction we do use the multivariate series itself.
+        # Either way, for train/validation, will pass in the full Y tensor and just use the relevant slices.
 
         if self.history_reverse==True:
-            X = torch.flip(X.reshape(1,-1),[1]).reshape(-1) #!!!!!!!!for now ok with univariate time series
+            X = torch.flip(X, [0])
         if self.horizon_reverse==True:
-            Y = torch.flip(Y.reshape(1,-1),[1]).reshape(-1) #!!!!!!!!for now ok with univariate time series        
-
+            Y = torch.flip(Y, [0])
+        
         #Do some checks on dimensionality
-        assert(self.history_npts == X.size()[0]) #!!!!!!!ok for now univariate
-        assert(self.horizon_npts == Y.size()[0]) #!!!!!!!ok for now univariate
-
+        assert(self.history_npts == X.shape[0])
+        assert(self.horizon_npts == Y.shape[0])
+        # print('X.shape', X.shape)
+        # print('Y.shape', Y.shape)
+        
         return (X,Y) #X and Y are both tensors
     
     
@@ -234,24 +289,31 @@ class TSFakeDataset(Dataset):
         for kk, vv in attributes.items():
             print(kk, vv)
     
-    def get_n_input_features(self):
-        """
-        Get number of features
-        """
-        #For this fake data, just a single univariate series (not multivariable)
-        #and not using any other features (e.g. timestamps or external features)
-        #so just = 1
-        self.n_input_features = 1
-        return self.n_input_features
+    # def get_n_multivariate(self):
+    #     """
+    #     Get number of multivariate dimensions for the prediction task
+        
+        
+    #     For multivariate forecasting, some assumptions:
+            
+    #         - Of the input features, some subset of them are the actual multivariate variables we need to predict
+    #         - the remaining features are exogenous variables, or e.g. timestamp features derived from the inputs
+    #         - For the prediction task, if predicting an M dimensional multivariate output distribution,
+    #           we have all M multivariate series as input features.
+              
+    #         - With this synthetic dataset, not doing timestamp features yet, so just manually say how many
+    #           of the features will be treated as the multiavriate series.
+    #     """
+    #     return self.n_multivariate    
     
-    def get_n_future_features(self):
-        """
-        Get number of features
-        """
-        #For this fake data, no features used in future (e.g. no future
-        #timestamp features), so just = 0
-        self.n_future_features = 0
-        return self.n_future_features
+    # def get_n_future_features(self):
+    #     """
+    #     Get number of features
+    #     """
+    #     #For this fake data, no features used in future (e.g. no future
+    #     #timestamp features), so just = 0
+    #     self.n_future_features = 0
+    #     return self.n_future_features
     
     
     def get_number_missing_features(self, idx):
@@ -294,5 +356,7 @@ class TSFakeDataset(Dataset):
 
 if __name__ == '__main__':
 
-    if int(sys.argv[1]) == 1:
-        create_dataset(1000, 256, seed=123)
+    # if int(sys.argv[1]) == 1:
+        # create_dataset(1000, 256, seed=123)
+        
+    create_dataset(1000, 256, seed=123)
