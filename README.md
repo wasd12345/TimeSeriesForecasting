@@ -4,21 +4,25 @@ A comparison of some Deep Learning models for time series forecasting applicatio
 
 Some standard  architectures, and a few novel architectures.
 
-All implemented in Pytorch.
+All implemented in PyTorch.
 
 
 ---
 
 ## Features
 
-- Deep learning models for time series forecasting for univariate and multivariate time series:
+- Deep learning models for time series forecasting:
  [Recurrent models, Convolutional models, Attention based models, Transformers, Direct Multi-step Forecaster, hybrid models, Neural Turing Machine + DNC, novel models]
 
-- Point forecasts and quantile forecasts
+- Point estimates and quantile forecasts
 
-- Metalearning how to best preprocess/deseasonalize/normalize the data for time series inputs; and other training parameters
+- Univariate and multivariate time series
+
+- Exogenous features and horizon (future) features
 
 - Rigorous analysis of the predictions and various forecasting performance metrics
+
+- Metalearning how to best preprocess/deseasonalize/normalize the data for time series inputs; and other training parameters
 
 ---
 
@@ -71,16 +75,17 @@ $ python train.py
 
 ## To Do
 
+- **History/Horizon Analysis**
+
+- **sliding window preprocessing (log + standard scale) + learning how to optimally preprocess**
+
+- **include ~ConvS2S implementation**
+
 - **Models not yet implemented:**
     - Transformer
     - Cinar et al. Position based attention encoder-decoder
     - ES-RNN
     - "Order Matters" style Read-Process-Write for very long series
     - NTM/DNC
-
-
-- **History/Horizon Analysis**
-
-- **finish quantiles, for multivariate (right now working with quantiles & univariate)
 
 ---
