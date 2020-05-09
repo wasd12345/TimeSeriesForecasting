@@ -278,7 +278,24 @@ class TSFakeDataset(Dataset):
         # print('X.shape', X.shape)
         # print('Y.shape', Y.shape)
         
-        return (X,Y) #X and Y are both tensors
+        # Time-series pre-processing:
+        # Instead of doing entire series pre-processing, is usually better to
+        # do sliding window pre-processing. So for this given chunking of this
+        # time series, need to track which params were used to transform it during
+        # this batch of training:
+        #
+        # mean - for scaling to have 0 mean
+        # last - use the value at last timestep, to scale so horizon timesteps are mostly near ~1
+        # min - in case negative or 0, can translate all points upward, e.g. if want to take log
+        # range - min/max range
+        # std - standard deviation for standard scaling
+        # LAMBDA - for doing Box-Cox transformation. Maybe treat separately in train.py script and learn as a learnable torch variable to learn per series transformation, based on data
+        transform_params = {}
+        transform_params['mean'] = X.mean(dim=0) #Take mean over time "T" dimension
+        transform_params['last'] = X[-1,:]
+        transform_params['std'] = X.std(dim=0)
+
+        return (idx, X, Y, transform_params) #X and Y are both tensors
     
     
     def print_attributes(self):
@@ -352,6 +369,72 @@ class TSFakeDataset(Dataset):
     #     #And now since some parameters may have changed, must recalculate all
     #     #the derived parameters:
     #     self.calculate_derived()
+
+
+
+
+
+def standard_scale(X, Y, transform_params):
+    """
+    Standard scaling
+    
+    Example of transformation we might want to learn
+    
+    X is [batch x T_history x M]
+    
+    Y is [batch x T_horizon x M]
+    
+    transform_params dict has 'mean' and 'std' (and other params)
+    as [batch x M]
+    
+    """
+    #Mean and std from per time series parameters:
+    X_mean = transform_params['mean'].unsqueeze(1)
+    X_std = transform_params['std'].unsqueeze(1)
+    X -= X_mean
+    X /= X_std
+    Y -= X_mean
+    Y /= X_std
+    return X, Y
+
+
+def standard_scale_inverse(X, Y_pred, Y_gt, transform_params):
+    """
+    For actual prediction task, after model output, invert the pre-processing
+    step to get the final predictions
+    
+    ** Since this supports quantile forecasting, the output Y_pred is in shape:
+        [batch x T_horizon x M x Q]
+    So need to invert the transformations for all point estimates /
+    quantile forecasts
+    """
+
+    X_mean = transform_params['mean']
+    X_std = transform_params['std']
+    
+    # batchsize = Y_pred.shape[0]
+    # T_horizon = Y_pred.shape[1]
+    M = Y_pred.shape[2]
+    # Q = Y_pred.shape[3]
+    
+    # To transform the original X, each feature dim was transformed independently
+    # when creating the batch.
+    X_mean = X_mean.unsqueeze(1).unsqueeze(-1)#.repeat(1,T_horizon,1,Q)
+    X_std = X_std.unsqueeze(1).unsqueeze(-1)#.repeat(1,T_horizon,1,Q)
+    X = X.unsqueeze(-1)*X_std + X_mean
+    
+    #For the horizon timesteps (Y), just use the multivariate output and
+    #ignore the exogenous features (do :M):
+    X_mean = X_mean[:,:,:M,:]
+    X_std = X_std[:,:,:M,:]
+    Y_pred = Y_pred*X_std + X_mean
+    Y_gt = Y_gt*X_std + X_mean
+    
+    #Make X same shape output as it was input: [batch x T_history x F]
+    X = X.squeeze(-1)
+    
+    return X, Y_pred.contiguous(), Y_gt.contiguous()
+
 
 
 if __name__ == '__main__':

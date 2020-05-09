@@ -259,8 +259,21 @@ for epoch in range(MAX_EPOCHS):
         print('train_set.history_span', train_set.history_span)
         print('train_set.horizon_span', train_set.horizon_span)
         print('train_set.history_start', train_set.history_start)
-        X = sample[0].float()
-        Y = sample[1].float()
+        batch_inds = sample[0]
+        X = sample[1].float()
+        Y = sample[2].float()
+        transform_params = sample[3]
+        
+        # PRE_PROCESSING
+        # Transform this chunk of data. May want to learn the  preprocessing
+        # method instead of using a deterministic transformation like 
+        # standard scaling. (E.g. can learn the parameter lambda in Box-Cox).
+        # So, do pre-processing here in the train script instead of in the 
+        # Dataset and DataLoader.
+        # 
+        # E.g. below, just do standard scaling, but allowing for future improvements:
+        X, Y = tsfake_task.standard_scale(X, Y, transform_params)
+        
         
         # Transfer to GPU, if available:
         X = X.to(device)
@@ -285,7 +298,7 @@ for epoch in range(MAX_EPOCHS):
         
         # Run the forward and backward passes:
         opt.zero_grad()
-        #y_pred = model(X) #For models like DummyMLP which do direct forecast, i.e. don't rely on recurrent decoder predictions, so don't need Y vals:
+        #Y_pred = model(X) #For models like DummyMLP which do direct forecast, i.e. don't rely on recurrent decoder predictions, so don't need Y vals:
         # vs. for recurrent deocders, which may use teacher forcing.
         #If don't need teacher forcing(not implemented yet anyway), then can ignore Y
         #if the model works for variable size horizons, must specify what horizon size to use:
@@ -295,8 +308,8 @@ for epoch in range(MAX_EPOCHS):
                                 'teacher_forcing':True,
                                 'teacher_forcing_prob':.25
                                 }            
-        y_pred = model(X, future_features, Y_teacher, **model_run_params)
-        # print('y_pred.shape', y_pred.shape)
+        Y_pred = model(X, future_features, Y_teacher, **model_run_params)
+        # print('Y_pred.shape', Y_pred.shape)
     
         #format is [batch x T_horizon x multivar x 1]
         Y_teacher = torch.unsqueeze(Y_teacher, 3)
@@ -319,8 +332,8 @@ for epoch in range(MAX_EPOCHS):
             #However, in the latter case, better to define a weighted combination of the different losses, and use it as one
             #of the cutom loss functions in the TRAINING_METRICS_TRACKED dict (and also set as the OPTIMIZATION_FUNCTION_NAME)
             #format is [batch x T_horizon x multivar x quantiles]
-            y_pred_this_loss = y_pred[:,:,:,loss_inds]
-            # print('y_pred_this_loss.shape', y_pred_this_loss.shape)
+            Y_pred_this_loss = Y_pred[:,:,:,loss_inds]
+            # print('Y_pred_this_loss.shape', Y_pred_this_loss.shape)
             
 
             #For each of the M multivariate output dimensions, get the loss:
@@ -332,7 +345,7 @@ for epoch in range(MAX_EPOCHS):
             train_loss_combined = torch.zeros(1)
             train_loss_tracker = []#torch.Tensor()
             for ii, dim in enumerate(range(logger.n_multivariate)):
-                loss_this_dim = function(y_pred_this_loss[:,:,dim,:], Y_teacher[:,:,dim,:], **kwargs)
+                loss_this_dim = function(Y_pred_this_loss[:,:,dim,:], Y_teacher[:,:,dim,:], **kwargs)
                 loss_this_dim = loss_this_dim.reshape((-1))
                 
                 #Reduce the loss function to a scalar. The point estimate losses
@@ -403,14 +416,24 @@ for epoch in range(MAX_EPOCHS):
         for bb, sample in enumerate(val_dl):
             # print(f'validation batch {bb}')
             
-            # Transfer to GPU, if available:
-            X = sample[0].float()
-            Y = sample[1].float()
+            # Load this batch:
+            batch_inds = sample[0]
+            X = sample[1].float()
+            Y = sample[2].float()
+            transform_params = sample[3]
+            #In validation, don't transform the Y (horizon), only the X (history).
+            #But to have actual MSE / SMAPE / etc. metrics, invert the pre-processing on the model's output
             X, Y = X.to(device), Y.to(device)
+            
+            
+            # PRE_PROCESSING
+            # Do same transformations as during training phase.
+            # E.g. below, just do standard scaling:         
+            X, Y = tsfake_task.standard_scale(X, Y, transform_params)
+            
+            
             Y_gt = Y[:,:,:N_MULTIVARIATE]
             future_features = Y[:,:,N_MULTIVARIATE:]
-            
-            #Y = Y.reshape(aaaaaaaaaaaaaa)
 
             bsize = X.shape[0]
             logger.batchsizes['validation'].extend([bsize])
@@ -423,14 +446,18 @@ for epoch in range(MAX_EPOCHS):
                                     'teacher_forcing':False,
                                     'teacher_forcing_prob':None
                                     }            
-            y_pred = model(X, future_features, Y_gt, **model_run_params)
+            
             Y_gt = torch.unsqueeze(Y_gt, 3)
-            # print('y_pred.shape', y_pred.shape)
+            Y_pred = model(X, future_features, Y_gt, **model_run_params)
+            # Invert the transformation process on Y_pred to get the final predictions:
+            # Y_pred = tsfake_task.standard_scale_inverse(...)
+
+
             for name, function_tuple in VALIDATION_METRICS_TRACKED.items():
                 function = function_tuple[0]
                 loss_inds = function_tuple[1]
                 kwargs = function_tuple[2]
-                y_pred_this_loss = y_pred[:,:,:,loss_inds]
+                Y_pred_this_loss = Y_pred[:,:,:,loss_inds]
                 
                 #For each of the M multivariate output dimensions, get the loss:
                 # dim_weights = torch.ones(logger.n_multivariate)
@@ -438,7 +465,7 @@ for epoch in range(MAX_EPOCHS):
                 # val_loss_combined = torch.zeros(1)
                 val_loss_tracker = []#torch.Tensor()
                 for ii, dim in enumerate(range(logger.n_multivariate)):
-                    loss_this_dim = function(y_pred_this_loss[:,:,dim,:], Y_gt[:,:,dim,:], **kwargs)
+                    loss_this_dim = function(Y_pred_this_loss[:,:,dim,:], Y_gt[:,:,dim,:], **kwargs)
                     loss_this_dim = loss_this_dim.reshape((-1))
                     q_weights = torch.ones_like(loss_this_dim)
                     q_weights = q_weights/torch.sum(q_weights)
@@ -453,16 +480,19 @@ for epoch in range(MAX_EPOCHS):
 
 
             #Plot ONE randomly chosen time series. History, and prediction along with ground truth future:
-            INDEX = torch.randint(0,X.shape[0],[1],dtype=int).item()
             #For multivariate case, just treat each variable independently for scatterplots and correlations:
+            INDEX = torch.randint(0,X.shape[0],[1],dtype=int).item()
             
+            # Invert the transformation process on X, Y_pred, Y_gt to get the final history, and horizon predictions:
+            X, Y_pred, Y_gt = tsfake_task.standard_scale_inverse(X, Y_pred, Y_gt, transform_params)
+
             #**The [batch x T x M x Q][0] indices are the point estimates (0th index along last axis)
-            # so use Y_gt[:,:,MM,0] and y_pred[:,:,MM,0]
+            # so use Y_gt[:,:,MM,0] and Y_pred[:,:,MM,0]
             multivar_inds = [mm for mm in range(logger.n_multivariate)]
             for nn, MM in enumerate(multivar_inds): 
-                plot_regression_scatterplot(y_pred[:,:,MM,0].view(-1), Y_gt[:,:,MM,0].view(-1), logger.output_dir, logger.n_epochs_completed, nn)
-                plot_predictions(X[INDEX,:,MM], Y_gt[INDEX,:,MM,0], y_pred[INDEX,:,MM,0], logger.output_dir, logger.n_epochs_completed, nn)
-                # print(y_pred[:10])
+                plot_regression_scatterplot(Y_pred[:,:,MM,0].view(-1), Y_gt[:,:,MM,0].view(-1), logger.output_dir, logger.n_epochs_completed, nn)
+                plot_predictions(X[INDEX,:,MM], Y_gt[INDEX,:,MM,0], Y_pred[INDEX,:,MM,0], logger.output_dir, logger.n_epochs_completed, nn)
+                # print(Y_pred[:10])
                 # print(Y[:10])
             
             print()            
