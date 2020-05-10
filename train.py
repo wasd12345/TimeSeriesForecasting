@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime
 from shutil import copy
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -35,6 +36,7 @@ import tasks.periodphase_task as periodphase_task
 
 #Repeatability
 TORCH_SEED = 12345
+NUMPY_SEED = TORCH_SEED+1
 
 # Task params
 TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction task to do [which dataset]
@@ -42,7 +44,8 @@ TASK = 'tsfake' #'periodphase' #'stocks' 'rainfall' 'energy' #which prediction t
 #Performance Metrics / Optimization metric
 #The actual function used for optimizing the parameters. Provide the name of one key in the dict TRAINING_METRICS_TRACKED                            
 OPTIMIZATION_FUNCTION_NAME = 'SMAPE'#'quantile_loss'#'SMAPE'#'q45_point_est'#'SMAPE'
-QUANTILES_LIST = [.45, .5] #[.05, .25, .45, .5, .55, .75, .95] #!!!!!!!!!!!!for now just use same quantiles for all quantile metrics but in general can differ
+QUANTILES_LIST = [.5, .05, .25, .75, .95] #[.05, .25, .45, .5, .55, .75, .95] #!!!!!!!!!!!!for now just use same quantiles for all quantile metrics but in general can differ
+QUANTILES_INDS = [0,1,2,3,4]
 #Format is: f'{metric name}' : ({function}, {loss indices list}, {dict of kwargs})
 TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
                             'SMAPE':(SMAPE, [0], {}),
@@ -50,7 +53,7 @@ TRAINING_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
                             'bias':(bias, [0], {}),
                             'pearson_r':(pearson_r, [0], {}),
                             'mutual_information':(mutual_information, [0], {}),
-                            'quantile_loss':(quantile_loss, [1,2], {'quantiles':QUANTILES_LIST}), #!!!!!!!!!must have indices list in order corresponding to the listy of quantiles
+                            'quantile_loss':(quantile_loss, QUANTILES_INDS, {'quantiles':QUANTILES_LIST}), #!!!!!!!!!must have indices list in order corresponding to the listy of quantiles
                             # 'q50_point_est':(quantile_loss, {'quantiles':[.50], 'loss_inds':ssssssssss})
                             # 'l1_loss':(F.l1_loss, [], {}) #Just to compare to 50q pinball loss to make sure is same
                             }
@@ -61,7 +64,7 @@ VALIDATION_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
                             'bias':(bias, [0], {}),
                             'pearson_r':(pearson_r, [0], {}),
                             'mutual_information':(mutual_information, [0], {}),
-                            'quantile_loss':(quantile_loss, [1,2], {'quantiles':QUANTILES_LIST}),
+                            'quantile_loss':(quantile_loss, QUANTILES_INDS, {'quantiles':QUANTILES_LIST}),
                             }
 
 # Model params
@@ -84,7 +87,7 @@ HISTORY_SIZE_TRAINING_MIN_MAX = [20,75] #[min,max] of allowed range during train
 HORIZON_SIZE_TRAINING_MIN_MAX = [7,30] #same idea but for the horizon size
 HISTORY_SIZE_VALIDATION_MIN_MAX = [20,70] #Same idea but the HISTORY for validation
 HORIZON_SIZE_VALIDATION_MIN_MAX = [7,25] #HORIZON for validation
-MAX_EPOCHS = 200 #89
+MAX_EPOCHS = 300 #89
 # EARLY_STOPPING_K = 3 #None #If None, don't use early stopping. If int, stop if validation loss in at least one of the most recent K epochs is not less than the K-1th last epoch
 #!!!!!!!!!!!! for now assuming the loss metric is the one being optimized
 # BATCHSIZE_SCHEDULE = ppppppp #how to adjust batchszie with training, e.g. random btwn min max,    vs.    decreasing batchsizes, etc.
@@ -113,6 +116,7 @@ use_cuda = torch.cuda.is_available()
 device = torch.device("cuda:0" if use_cuda else "cpu")
 # cudnn.benchmark = True
 torch.manual_seed(TORCH_SEED)
+np.random.seed(NUMPY_SEED)
 
 OUTPUT_DIR = 'output'
 
@@ -155,7 +159,11 @@ if MODEL == 'DummyMLP':
 elif MODEL == 'RecurrentEncoderDecoder':
     N_LAYERS = 2#3
     D_HIDDEN = 32
-    Q_QUANTILES = 7
+    #!!!!!!!!!!!!!!!!!!!! get number of quantiles
+    #if 0 in QUANTILES_INDS it means one of the quantiles was used as point estimate
+    #otherwise there was separately another index used as the point estimate
+    #*** 0 is always assumed as point estimate, i.e. we ALWAYS make a point estimate!!!!!!!!!
+    Q_QUANTILES = len(QUANTILES_INDS) if (0 in QUANTILES_INDS) else len(QUANTILES_INDS)+1
     BIDIRECTIONAL_ENC = False #False #True #Use bidirectional encoder
     P_DROPOUT_ENCODER = 0.#.25
     P_DROPOUT_DECODER = 0.#.25
@@ -197,6 +205,8 @@ optim_function = TRAINING_METRICS_TRACKED[OPTIMIZATION_FUNCTION_NAME][0]
 
 START_TIME = datetime.now().strftime("%Y%m%d_%H%M%S")
 summary_text = f'START_TIME = {START_TIME}\n' + \
+    f'TORCH_SEED = {TORCH_SEED}\n' + \
+    f'NUMPY_SEED = {NUMPY_SEED}\n' + \
     f'TASK = {TASK}\n' + \
     f'N_MULTIVARIATE (#dimensions of the time series) = {N_MULTIVARIATE}\n' + \
     f'D_FUTURE_FEATURES (#features) = {D_FUTURE_FEATURES}\n' + \
@@ -230,15 +240,16 @@ copy(THIS_SCRIPT_NAME, os.path.join(logger.output_dir, THIS_SCRIPT_NAME))
 # =============================================================================
 train_batchsize_this_epoch = BS_0__train
 val_batchsize_this_epoch = BS_0__val
+t0 = time.perf_counter()
 for epoch in range(MAX_EPOCHS):
     print(f'------------- Starting epoch {epoch} -------------\n')
-    t0 = 0.
     
     
     # =============================================================================
     # Training
     # =============================================================================
     print('Training...\n')
+    t_train_start = time.perf_counter()
     model.train()
 
     #Other per-batch training params:
@@ -397,9 +408,12 @@ for epoch in range(MAX_EPOCHS):
     train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, train_set.n_multivariate, train_set.n_external_features, next_history, next_horizon, next_start)
     train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)#, num_workers=NUM_WORKERS)
 
-    elapsed_train_time = time.perf_counter() - t0
+    t_train_end = time.perf_counter()
+    elapsed_train_time = t_train_end - t_train_start
+    cumulative_train_val_time = t_train_end - t0
     logger.n_exs_per_epoch += [logger.n_exs_cumulative_per_batch] #done at the epoch level
     print(f'elapsed_train_time = {elapsed_train_time}')
+    print(f'cumulative_train_val_time = {cumulative_train_val_time}')
 
 
 
@@ -408,6 +422,7 @@ for epoch in range(MAX_EPOCHS):
     # =============================================================================
     print('\n\n\n\n')
     print('Validation...\n')
+    t_val_start = time.perf_counter()
     model.eval()
     val_batchsize_this_epoch = BS_0__val #For now just use fixed batchsize but could adjust dynamically as necessary
     
@@ -489,9 +504,9 @@ for epoch in range(MAX_EPOCHS):
             #**The [batch x T x M x Q][0] indices are the point estimates (0th index along last axis)
             # so use Y_gt[:,:,MM,0] and Y_pred[:,:,MM,0]
             multivar_inds = [mm for mm in range(logger.n_multivariate)]
-            for nn, MM in enumerate(multivar_inds): 
+            for nn, MM in enumerate(multivar_inds):
                 plot_regression_scatterplot(Y_pred[:,:,MM,0].view(-1), Y_gt[:,:,MM,0].view(-1), logger.output_dir, logger.n_epochs_completed, nn)
-                plot_predictions(X[INDEX,:,MM], Y_gt[INDEX,:,MM,0], Y_pred[INDEX,:,MM,0], logger.output_dir, logger.n_epochs_completed, nn)
+                plot_predictions(X[INDEX,:,MM], Y_gt[INDEX,:,MM,0], Y_pred[INDEX,:,MM], logger.output_dir, logger.n_epochs_completed, nn, QUANTILES_LIST, QUANTILES_INDS)
                 # print(Y_pred[:10])
                 # print(Y[:10])
             
@@ -508,7 +523,8 @@ for epoch in range(MAX_EPOCHS):
     val_set = tsfake_task.TSFakeDataset(VAL_PATH, val_set.n_multivariate, val_set.n_external_features, next_history, next_horizon, next_start)
     val_dl = DataLoader(val_set, batch_size=BS_0__val, shuffle=True)
             
-    elapsed_val_time = time.perf_counter() - elapsed_train_time
+    t_val_end = time.perf_counter()
+    elapsed_val_time = t_val_end - t_val_start    
     print(f'elapsed_val_time = {elapsed_val_time}')
 
     # Save model / optimizer checkpoints:
@@ -538,7 +554,7 @@ for epoch in range(MAX_EPOCHS):
     
     
     logger.n_epochs_completed += 1
-    train_and_val_time = time.perf_counter() - t0
+    train_and_val_time = elapsed_train_time + elapsed_val_time
     logger.epoch_time.extend([train_and_val_time])
     print(f'time this epoch = {train_and_val_time}')
     print(f'------------- Finished epoch {epoch} -------------\n\n\n\n\n\n\n\n\n\n')

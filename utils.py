@@ -14,6 +14,8 @@ from scipy.stats import pearsonr
 import pandas as pd
 
 
+TIGHT_LAYOUT = .2
+
 class Logger():
     """
     Just basic structure to organize training/validation related metrics
@@ -96,6 +98,8 @@ class Logger():
                 plt.xlabel('Cumulative Examples', fontsize=20)
                 plt.ylabel(f'{loss_name}', fontsize=20)
                 plt.legend(numpoints=1)
+                plt.grid()
+                plt.tight_layout(TIGHT_LAYOUT)
                 savepath = os.path.join(self.output_dir, f'metric__{loss_name}_dim{dim}.png')
                 plt.savefig(savepath)
                 plt.close()
@@ -142,6 +146,8 @@ class Logger():
                     plt.xlabel('Cumulative Examples', fontsize=20)
                     plt.ylabel(f'{loss_name}', fontsize=20)
                     plt.legend(numpoints=1)
+                    plt.grid()
+                    plt.tight_layout(TIGHT_LAYOUT)
                     savepath = os.path.join(self.output_dir, f'metric__{loss_name}_dim{dim}_q{qq}.png')
                     plt.savefig(savepath)
                     plt.close()
@@ -168,25 +174,53 @@ class Logger():
     
     
     
-def plot_predictions(x_history, y_true, y_pred, output_dir, epoch, m_var):
+def plot_predictions(x_history, y_true, y_pred, output_dir, epoch, m_var, quantiles, quantiles_inds):
     """
     Visualize predictions
     
+    x_history - [T_history]
+    
+    y_true - [T_horizon]
+    
+    y_pred - [T_horizon x Q], where y_pred[:,0] is the series of point estimates
+            (the other 1:Q are quantiles in order of quantile_list)
+    
     m_var - for the multivariate output case, m_var is which dimension of the M
+            (just for labels in plots, NOT slicing arrays)
+    
+    quantiles - list of the quantiles used
+    
+    quantiles_inds - indices within y_pred corresponding to each of the values in quantiles
     """
+    
+    POINT_EST_IND = 0
+    
     x = torch.arange(x_history.numel() + y_true.numel())
     hist_end = x_history.numel()
     
-    plt.figure()
+    fig=plt.figure()
+    ax=fig.add_subplot(111)
     plt.title(f'Predictions at epoch {epoch}, dim {m_var}', fontsize=20)
     plt.plot(x[:hist_end], x_history, marker='o', color='k', linestyle='-', label='history')
     plt.plot(x[hist_end:], y_true, marker='o', color='b', linestyle='-', label='y_true')
-    plt.plot([hist_end-1, hist_end], [x_history[-1], y_true[0]], marker='None', color='k', linestyle='-')
-    plt.plot(x[hist_end:], y_pred, marker='x', color='r', linestyle='--', label='y_pred')
+    plt.plot([hist_end-1, hist_end], [x_history[-1], y_true[0]], marker='None', color='k', linestyle='-') #line between last history and 1st horizon
+    plt.plot(x[hist_end:], y_pred[:,POINT_EST_IND], marker='x', color='r', linestyle='--', label='y_pred')
+    
+    Q = len(quantiles)
+    if Q > 0:
+        lines = ['--']*Q
+        colors = [str(ii) for ii in np.linspace(.90,.10,Q)]#np.random.choice(['r','g','y','c'],Q)
+        for qq in range(Q):
+            qq = Q - 1 - qq
+            # if not (quantiles_inds[qq]] == POINT_EST_IND):
+            plt.plot(x[hist_end:], y_pred[:,quantiles_inds[qq]], color=colors[qq], linestyle=lines[qq], label=quantiles[qq])
+            ax.fill_between(x[hist_end:], y_pred[:,quantiles_inds[qq]], y_pred[:,POINT_EST_IND], color=colors[qq], alpha=.2)
+            
     plt.xlabel('Timestep', fontsize=20)
     plt.ylabel('Y', fontsize=20)
     plt.legend(numpoints=1)
     plt.grid()
+    plt.tight_layout(TIGHT_LAYOUT)
     savepath = os.path.join(output_dir, f'predictions_epoch{epoch}_dim{m_var}__random.png') #just for single random time series
     plt.savefig(savepath)
     plt.close()
@@ -213,6 +247,7 @@ def plot_regression_scatterplot(pred, true, output_dir, epoch, m_var):
     maxval = torch.max( torch.max(true), torch.max(pred) )
     plt.plot([minval, maxval], [minval, maxval], linestyle='--', color='k')
     plt.grid()
+    plt.tight_layout(TIGHT_LAYOUT)
     
     savepath = os.path.join(output_dir, f'scatterplot_epoch{epoch}_dim{m_var}.png')
     plt.savefig(savepath)

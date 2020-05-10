@@ -2,7 +2,7 @@
 
 A comparison of some Deep Learning models for time series forecasting applications.
 
-Some standard  architectures, and a few novel architectures.
+Some standard  architectures, and a few novel architectures and ideas.
 
 All implemented in PyTorch.
 
@@ -77,9 +77,11 @@ $ python train.py
 
 - **History/Horizon Analysis**
 
-- **sliding window preprocessing (log + standard scale) + learning how to optimally preprocess**
+- **include quantile interval figs**
 
 - **include ~ConvS2S implementation**
+
+- **learning how to Box-Cox (lambda as learnable param)**
 
 - **Models not yet implemented:**
     - Transformer
