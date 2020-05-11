@@ -8,41 +8,42 @@ import torch.nn as nn
 
 class RecurrentEncoderDecoder(nn.Module):
     """
-    Vanilla Encoder-Decoder network
+    Vanilla LSTM Encoder-Decoder network
     
-    Bidirectional LSTM encoder
-    
-    Dropout between layers (vertically)
+    - Bidirectional LSTM encoder
+    - Dropout between layers (vertically)
+    - Teacher Forcing (probabilistic per time-step)
     
     **The encoder LSTM and decoder LSTM have the same number of layers.
-    **The regression output is assumed univariate for now.
     """
-    def __init__(self, input_size, d_hidden, M, Q, d_future_features, n_layers,
-                 bidirectional_encoder, p_dropout_encoder, p_dropout_decoder,
-                 ):
+    def __init__(self, architecture, M, Q, encoder_params, decoder_params):
         super(RecurrentEncoderDecoder, self).__init__()
         #Params
-        self.input_size = input_size
-        self.d_hidden = d_hidden
+        self.architecture = architecture
         self.M = M
         self.Q = Q
-        self.d_future_features = d_future_features
-        self.n_layers = n_layers
-        self.bidirectional_encoder = bidirectional_encoder
-        self.p_dropout_encoder = p_dropout_encoder
-        self.p_dropout_decoder = p_dropout_decoder
-
-        self.encoder = Encoder(self.input_size, self.d_hidden, self.n_layers, self.bidirectional_encoder, self.p_dropout_encoder)
-        self.decoder = Decoder(self.M, self.Q, self.d_future_features, self.d_hidden, self.n_layers, self.p_dropout_decoder)
+        self.encoder_params = encoder_params
+        self.decoder_params = decoder_params
+        self.decoder_params['M'] = M
+        self.decoder_params['Q'] = Q
+        
+        if encoder_params['architecture']=='recurrent':
+            self.encoder = Encoder_recurrent(**self.encoder_params)
+        elif encoder_params['architecture']=='conv':
+            self.encoder = Encoder_recurrent(**self.encoder_params)            
+            
+        if decoder_params['architecture']=='recurrent':
+            self.decoder = Decoder_recurrent(**self.decoder_params)
         # self.connector = nn.Linear(self.decoder.ddddddddddddddddddddd, self.decoder.d_input)
         
-        if self.bidirectional_encoder:
+        if (self.encoder.architecture == 'recurrent') and (self.encoder.bidirectional):
             #Independently project both directions for h, and both directions for c:
             N = self.encoder.n_layers * self.encoder.d_hidden
             self.bidi_project__h = nn.Linear(2*N, N)
             self.bidi_project__c = nn.Linear(2*N, N)
             self.nonlin__h = nn.ELU()
             self.nonlin__c = nn.ELU() #e.g.
+    
     
     def forward(self, X, future_features, Y_teacher, **kwargs):
         # M = dimensionality of the multiavriate time series
@@ -57,15 +58,12 @@ class RecurrentEncoderDecoder(nn.Module):
         
         batchsize = X.shape[0]
         
-        # keep the decoder predictions at each timestep
-        outputs = []
-        
         # Use last h from encoder as deocder initial hidden state
         h, c = self.encoder(X)
         
         #If bidirectional encoder, concat the forward and backward directions,
         #and use small feedforward NN and project back to hidden size:
-        if self.bidirectional_encoder:
+        if self.encoder.bidirectional:
             #Concat the forward and backward directions for hidden state vectors, h,
             #and pass through small feedforward network to project back to single hidden size:
             h = h.view(self.encoder.n_layers, 2, batchsize, self.encoder.d_hidden)
@@ -87,71 +85,29 @@ class RecurrentEncoderDecoder(nn.Module):
             
             #h and c are now [n_layers x bacthsize x d_hidden],
             #which is exactly as needed for the (unidirectional) decoder
-
+        
+        #Now the decoder process:
         # Decoder input at 1st decoding timestep is previous value of the 
         # multivariate series (inp_y), along with the current timesrep's features (inp_f):
-        inp_y = torch.unsqueeze(X[:,-1,:self.M], 1)
+        inp_y = torch.unsqueeze(X[:,-1,:self.M], 1)            
+        all_outputs = self.decoder(batchsize, Y_teacher, inp_y, h, c, future_features, horizon_span, teacher_forcing, teacher_forcing_prob)
         
-        # Predict as many timesteps into the future as needed
-        # (will vary during training, but each batch will have same length to
-        # save wasted computation from padding and predicting on padded values)
-        for mm, t in enumerate(range(horizon_span)):
-            inp_f = torch.unsqueeze(future_features[:,mm,:], 1)
-            # print('inp_y.shape', inp_y.shape)
-            # print('inp_f.shape', inp_f.shape)
-            #Although slicing out 1st timestep only, keep in usual LSTM rank 3 tensor format
-            inp = torch.cat([inp_y, inp_f], dim=2)
-            # print('inp.shape', inp.shape)
-            y_out, h, c = self.decoder(inp, h, c)
-            outputs.append(y_out)
-            # print('deocder forward -----------')
-            # print('y_out.shape', y_out.shape)
-            # print('h.shape', h.shape)
-            # print('c.shape', c.shape)
-            
-            #Get the part of the output that will actually be used for next timestep's (recursive) input:
-            point_inds = torch.arange(self.M) #!!!!!!! indices corresponding to point estimates of the M variables in multivariable forecasting case. If doing quantiles, could just assume 0:M indices is pt. estimates.
-            inp_y = y_out[:,:,point_inds] #slice the y_out to get only the elements corresponding to the point estimates
-
-            #However, if using teaher forcing (during training only), then use the ground truth:
-            #Draw random number to decide if to use teach forcing on this timestep:
-            if teacher_forcing and (torch.rand(1).item() < teacher_forcing_prob):
-                print(f'Teacher forcing on step {mm}')
-                #If end up doing Teacher Forcing, use groun truth Y_teacher as input to next step:
-                inp_y = Y_teacher[:,mm,:]
-                inp_y = torch.unsqueeze(inp_y, 1)
-
-            # print('y_out.shape, inp_y.shape', y_out.shape, inp_y.shape)
-
-
-
-        
-        # Stack the outputs along the timestep axis into a tensor with shape:
-        # [batchsize x length x output]
-        all_outputs = torch.cat([i for i in outputs], dim=1)
-
-        # Multivariate and quantiles:
-        # Standardize the shape to be:
-        # [batchsize x T x M x Q]
-        # e.g. univariate point estimates are then just [batch x T x 1 x 1]
-        # multivariate point estimates are [batch x T x M x 1]
-        
-        all_outputs = all_outputs.reshape((batchsize, horizon_span, self.M, self.Q))
-        # print('all_outputs.shape', all_outputs.shape)
         return all_outputs
 
 
 
 
 
-class Encoder(nn.Module):
+
+class Encoder_recurrent(nn.Module):
     """
     The Encoder module. For now just uses a basic multilayer LSTM.
     **some assumptions on same dimensions for now, and univariate ts forecasting task
     """
-    def __init__(self, d_input, d_hidden, n_layers, bidirectional, p_dropout_encoder):
+    def __init__(self, architecture, d_input, d_hidden, n_layers, bidirectional, p_dropout_encoder):
         super().__init__()
         # Params
+        self.architecture = architecture
         self.d_input = d_input
         self.d_hidden = d_hidden
         self.n_layers = n_layers
@@ -168,7 +124,43 @@ class Encoder(nn.Module):
     
     
     
-class Decoder(nn.Module):
+class Encoder__convolutional(nn.Module):
+    """
+    An encoder based on a convolutional arhcitecture.
+    
+    Use stacks of different size 1d convolution kernels, working in parallel
+    as ~multihead encoders. / parallel read heads.
+    
+    Can work on arbitrary length input sequence.
+    
+    Designed such that each layers output is the same length as the input sequence. 
+    This way, skip connections can be used in an elementwise additive way.
+    So during decoding, outputs of different layers can be combined, effectively
+    allowing the decoder to attend over outputs of different layers, which
+    correspond to different levels of abstraction of the input representations.
+    E.g. lower level conv have only seen small neighborhood context, but higher 
+    levels can aggregate to higher level of abstraction.
+    
+    To ensure this proper matchup of dimensions, 0-padding is used such that:
+        a) kernel_size = odd integer, stride=1, dilation=1
+        b) padding = kernel_size - 1
+        c) then left and right trim the output by (kernel_size - 1)/2 before passing to next layer
+    """
+    def __init__(self, input_size):
+        super(Encoder__convolutional, self).__init__()
+        #Params
+        
+    def forward(self, x):
+        pass    
+    
+    
+    
+    
+    
+    
+    
+    
+class Decoder_recurrent(nn.Module):
     """
     Decoder module. For now assumes same n_layer and d_hidden dims as encoder...
     
@@ -199,9 +191,11 @@ class Decoder(nn.Module):
     
     
     """
-    def __init__(self, M, Q, d_future_features, d_hidden, n_layers, p_dropout_decoder):
+    def __init__(self, architecture, attention_type, M, Q, d_future_features, d_hidden, n_layers, p_dropout_decoder):
         super().__init__()
         # Params
+        self.architecture = architecture
+        self.attention_type = attention_type
         #future_features is [batch x d_future_features], where
         self.d_future_features = d_future_features
         self.M = M #if univariate is 1, in general is M for multivariate output distribution
@@ -215,13 +209,46 @@ class Decoder(nn.Module):
         self.recurrence = nn.LSTM(self.d_input, self.d_hidden, self.n_layers, batch_first=True, dropout=p_dropout_decoder)
         self.linear_out_predict = nn.Linear(self.d_hidden, self.d_output)
         #self.linear_out_next_in = nn.Linear(self.d_output, self.M) #to project all quantile information back into size of point estimates, for next timestep
-    def forward(self, inp, h, c):
-        # print('self.d_output', self.d_output)
-        # print('self.d_input', self.d_input)
-        # print('self.d_future_features', self.d_future_features)
-        # print('self.M', self.M)
-        # print('inp.shape, h.shape, c.shape', inp.shape, h.shape, c.shape)
-        #inp is the concatenated tensor of future features with the M recursively predicted outputs for previous timestep of the M-dim multivariate series
-        output, (h, c) = self.recurrence(inp, (h, c))
-        y_out = self.linear_out_predict(output.squeeze(0))
-        return y_out, h, c
+    
+    def forward(self, batchsize, Y_teacher, inp_y, h, c, future_features, horizon_span, teacher_forcing, teacher_forcing_prob):
+        
+        # keep the decoder predictions at each timestep
+        outputs = []
+        
+        # Predict as many timesteps into the future as needed
+        # (will vary during training, but each batch will have same length to
+        # save wasted computation from padding and predicting on padded values)
+        for mm, t in enumerate(range(horizon_span)):
+            inp_f = torch.unsqueeze(future_features[:,mm,:], 1)
+            #Although slicing out 1st timestep only, keep in usual LSTM rank 3 tensor format
+            inp = torch.cat([inp_y, inp_f], dim=2)
+            
+            #inp is the concatenated tensor of future features with the M recursively predicted outputs for previous timestep of the M-dim multivariate series
+            output, (h, c) = self.recurrence(inp, (h, c))
+            y_out = self.linear_out_predict(output.squeeze(0))
+            outputs.append(y_out)
+            
+            #Get the part of the output that will actually be used for next timestep's (recursive) input:
+            point_inds = torch.arange(self.M) #!!!!!!! indices corresponding to point estimates of the M variables in multivariable forecasting case. If doing quantiles, could just assume 0:M indices is pt. estimates.
+            inp_y = y_out[:,:,point_inds] #slice the y_out to get only the elements corresponding to the point estimates
+
+            #However, if using teaher forcing (during training only), then use the ground truth:
+            #Draw random number to decide if to use teach forcing on this timestep:
+            if teacher_forcing and (torch.rand(1).item() < teacher_forcing_prob):
+                print(f'Teacher forcing on step {mm}')
+                #If end up doing Teacher Forcing, use groun truth Y_teacher as input to next step:
+                inp_y = Y_teacher[:,mm,:]
+                inp_y = torch.unsqueeze(inp_y, 1)
+
+        # Stack the outputs along the timestep axis into a tensor with shape:
+        # [batchsize x length x output]
+        all_outputs = torch.cat([i for i in outputs], dim=1)
+
+        # Multivariate and quantiles:
+        # Standardize the shape to be:
+        # [batchsize x T x M x Q]
+        # e.g. univariate point estimates are then just [batch x T x 1 x 1]
+        # multivariate point estimates are [batch x T x M x 1]
+        all_outputs = all_outputs.reshape((batchsize, horizon_span, self.M, self.Q))
+        
+        return all_outputs

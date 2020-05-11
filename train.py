@@ -17,8 +17,7 @@ from utils import Logger, plot_regression_scatterplot, plot_predictions
 
 #Pytorch models
 from models.DummyMLP import DummyMLP
-import models.RecurrentEncoderDecoder as RecEncDec
-import models.ConvolutionalEncoderDecoder as ConvEncDec
+import models.RecurrentEncoderDecoder as EncDec
 
 #Tasks / problem applications
 #(defined in specific way with Dataset class to be used by DataLoader)
@@ -167,17 +166,25 @@ elif MODEL == 'RecurrentEncoderDecoder':
     BIDIRECTIONAL_ENC = False #False #True #Use bidirectional encoder
     P_DROPOUT_ENCODER = 0.#.25
     P_DROPOUT_DECODER = 0.#.25
-    enc_dec_params = {'input_size':INPUT_SIZE,
-                      'd_hidden':D_HIDDEN,
+    enc_dec_params = {'architecture':'LSTM-LSTM',
                       'M':N_MULTIVARIATE,
                       'Q':Q_QUANTILES,
-                      'd_future_features':D_FUTURE_FEATURES,
-                      'n_layers':N_LAYERS,
-                      'bidirectional_encoder':BIDIRECTIONAL_ENC,
-                      'p_dropout_encoder':P_DROPOUT_ENCODER,
-                      'p_dropout_decoder':P_DROPOUT_DECODER
+                      'encoder_params':{'architecture':'recurrent',
+                                        'd_input':INPUT_SIZE,
+                                        'n_layers':N_LAYERS,
+                                        'd_hidden':D_HIDDEN,
+                                        'bidirectional':BIDIRECTIONAL_ENC,
+                                        'p_dropout_encoder':P_DROPOUT_ENCODER,
+                                        },
+                      'decoder_params':{'architecture':'recurrent',
+                                        'n_layers':N_LAYERS,
+                                        'd_hidden':D_HIDDEN,
+                                        'p_dropout_decoder':P_DROPOUT_DECODER,
+                                        'd_future_features':D_FUTURE_FEATURES,
+                                        'attention_type':None
+                                        }
                       }
-    model = RecEncDec.RecurrentEncoderDecoder(**enc_dec_params).to(device)  
+    model = EncDec.RecurrentEncoderDecoder(**enc_dec_params).to(device)  
     model_run_params = {'horizon':train_set.horizon_span,
                         'teacher_forcing':True,
                         'teacher_forcing_prob':.25

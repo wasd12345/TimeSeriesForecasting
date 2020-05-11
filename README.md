@@ -75,11 +75,15 @@ $ python train.py
 
 ## To Do
 
+- **include quantile interval figs**
+- **include ~ConvS2S implementation**
+- **include MQ-RNN implementation**
+
 - **History/Horizon Analysis**
 
-- **include quantile interval figs**
+- **hidden state regularizers**
 
-- **include ~ConvS2S implementation**
+- **encoder side prediction auxiliary task / intermediate losses ~ Al-Rfou Deeper Self-Attention**
 
 - **learning how to Box-Cox (lambda as learnable param)**
 
