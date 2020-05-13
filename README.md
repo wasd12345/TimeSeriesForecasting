@@ -76,7 +76,7 @@ $ python train.py
 ## To Do
 
 - **include quantile interval figs**
-- **include ~ConvS2S implementation**
+
 - **include MQ-RNN implementation**
 
 - **History/Horizon Analysis**

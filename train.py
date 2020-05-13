@@ -67,7 +67,7 @@ VALIDATION_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
                             }
 
 # Model params
-MODEL = 'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models, to do direct comparison      MODEL_LIST = ...
+MODEL = 'ConvEncoderDecoder'#'ConvEncoderDecoder' #'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models, to do direct comparison      MODEL_LIST = ...
 #!!!!!!! vs. MODEL_LIST = ['dsrnn', 'Cho',...] and then track stats for each model, at same time, using individual optimizers but exact same training / val batches
 #!!!!!!! ENSEMBLE_N_MODELS = 1 #Number of models to average together in bagged ensemble
 #!!!!!!! ENSEMBLE_N_CHECKPOINTS = 1 #Number of checkpoints over which to do weight averaging [EMA weighting]
@@ -166,18 +166,17 @@ elif MODEL == 'RecurrentEncoderDecoder':
     BIDIRECTIONAL_ENC = False #False #True #Use bidirectional encoder
     P_DROPOUT_ENCODER = 0.#.25
     P_DROPOUT_DECODER = 0.#.25
-    enc_dec_params = {'architecture':'LSTM-LSTM',
-                      'M':N_MULTIVARIATE,
+    enc_dec_params = {'M':N_MULTIVARIATE,
                       'Q':Q_QUANTILES,
-                      'encoder_params':{'architecture':'recurrent',
+                      'encoder_params':{'architecture':'LSTM',
                                         'd_input':INPUT_SIZE,
-                                        'n_layers':N_LAYERS,
+                                        'n_layers_encoder':N_LAYERS,
                                         'd_hidden':D_HIDDEN,
                                         'bidirectional':BIDIRECTIONAL_ENC,
                                         'p_dropout_encoder':P_DROPOUT_ENCODER,
                                         },
-                      'decoder_params':{'architecture':'recurrent',
-                                        'n_layers':N_LAYERS,
+                      'decoder_params':{'architecture':'LSTM',
+                                        'n_layers_decoder':N_LAYERS,
                                         'd_hidden':D_HIDDEN,
                                         'p_dropout_decoder':P_DROPOUT_DECODER,
                                         'd_future_features':D_FUTURE_FEATURES,
@@ -185,10 +184,46 @@ elif MODEL == 'RecurrentEncoderDecoder':
                                         }
                       }
     model = EncDec.RecurrentEncoderDecoder(**enc_dec_params).to(device)  
-    model_run_params = {'horizon':train_set.horizon_span,
+    model_run_params = {'horizon_span':train_set.horizon_span,
                         'teacher_forcing':True,
                         'teacher_forcing_prob':.25
                         }
+elif MODEL == 'ConvEncoderDecoder':
+    # T_HISTORY = 40
+    N_LAYERS_ENCODER = 3
+    N_LAYERS_DECODER = 2
+    D_HIDDEN = 32
+    REDUCE_OPS_LIST = [torch.mean, torch.std]#, torch.max, torch.min, ]
+    Q_QUANTILES = len(QUANTILES_INDS) if (0 in QUANTILES_INDS) else len(QUANTILES_INDS)+1
+    KERNEL_SIZES = [3,5,7,15] #List of sizes of convolution kernels. Use POSITIVE ODD INTEGERS.
+    N_FILTERS_EACH_KERNEL = [10,10,20,25] #For each size kernel in KERNEL_SIZES, the number of filters to use
+    P_DROPOUT_DECODER = 0.#.25
+    enc_dec_params = {'M':N_MULTIVARIATE,
+                      'Q':Q_QUANTILES,
+                      'encoder_params':{'architecture':'conv',
+                                        # 'T_history':T_HISTORY,
+                                        'd_input':INPUT_SIZE,
+                                        'n_layers_encoder':N_LAYERS_ENCODER,
+                                        'd_hidden':D_HIDDEN,
+                                        'kernel_sizes':KERNEL_SIZES,
+                                        'n_filters_each_kernel':N_FILTERS_EACH_KERNEL,
+                                        'reduce_ops_list':REDUCE_OPS_LIST,
+                                        },
+                      'decoder_params':{'architecture':'LSTM',
+                                        'n_layers_decoder':N_LAYERS_DECODER,
+                                        'd_hidden':D_HIDDEN,
+                                        'p_dropout_decoder':P_DROPOUT_DECODER,
+                                        'd_future_features':D_FUTURE_FEATURES,
+                                        'attention_type':None
+                                        }
+                      }
+    model = EncDec.RecurrentEncoderDecoder(**enc_dec_params).to(device)  
+    model_run_params = {'horizon_span':train_set.horizon_span,
+                        'teacher_forcing':True,
+                        'teacher_forcing_prob':.25
+                        }    
+    
+    
     
 # elif MODEL == 'dsrnn':
 #     model = dsrnn(...)
@@ -198,8 +233,6 @@ elif MODEL == 'RecurrentEncoderDecoder':
 #     model = ddddddddd(...)
 else:
     raise Exception(f'"{MODEL}" MODEL not implemented yet')
-
-
 
 
 #Optimizer
@@ -321,7 +354,7 @@ for epoch in range(MAX_EPOCHS):
         #If don't need teacher forcing(not implemented yet anyway), then can ignore Y
         #if the model works for variable size horizons, must specify what horizon size to use:
         model_run_params = {}
-        if MODEL == 'RecurrentEncoderDecoder':
+        if (MODEL=='RecurrentEncoderDecoder') or (MODEL=='ConvEncoderDecoder'): #!!!!! if one of the models that handles variable size T inputs
             model_run_params = {'horizon_span':train_set.horizon_span,
                                 'teacher_forcing':True,
                                 'teacher_forcing_prob':.25
@@ -463,7 +496,7 @@ for epoch in range(MAX_EPOCHS):
             
             # Run the forward pass:
             model_run_params = {}
-            if MODEL == 'RecurrentEncoderDecoder':
+            if (MODEL=='RecurrentEncoderDecoder') or (MODEL=='ConvEncoderDecoder'): #!!!!! if one of the models that handles variable size T inputs
                 model_run_params = {'horizon_span':val_set.horizon_span,
                                     'teacher_forcing':False,
                                     'teacher_forcing_prob':None

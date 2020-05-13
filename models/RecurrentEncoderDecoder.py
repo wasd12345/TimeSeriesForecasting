@@ -4,7 +4,8 @@
 
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
+from numpy import inf
 
 class RecurrentEncoderDecoder(nn.Module):
     """
@@ -16,29 +17,30 @@ class RecurrentEncoderDecoder(nn.Module):
     
     **The encoder LSTM and decoder LSTM have the same number of layers.
     """
-    def __init__(self, architecture, M, Q, encoder_params, decoder_params):
+    def __init__(self, M, Q, encoder_params, decoder_params):
         super(RecurrentEncoderDecoder, self).__init__()
         #Params
-        self.architecture = architecture
         self.M = M
         self.Q = Q
         self.encoder_params = encoder_params
         self.decoder_params = decoder_params
+        self.architecture = self.encoder_params['architecture'] + '->' + self.decoder_params['architecture']
         self.decoder_params['M'] = M
         self.decoder_params['Q'] = Q
         
-        if encoder_params['architecture']=='recurrent':
+        if encoder_params['architecture']=='LSTM':
             self.encoder = Encoder_recurrent(**self.encoder_params)
         elif encoder_params['architecture']=='conv':
-            self.encoder = Encoder_recurrent(**self.encoder_params)            
+            self.encoder_params['n_layers_decoder'] = self.decoder_params['n_layers_decoder']
+            self.encoder = Encoder_convolutional(**self.encoder_params)            
             
-        if decoder_params['architecture']=='recurrent':
+        if decoder_params['architecture']=='LSTM':
             self.decoder = Decoder_recurrent(**self.decoder_params)
         # self.connector = nn.Linear(self.decoder.ddddddddddddddddddddd, self.decoder.d_input)
         
-        if (self.encoder.architecture == 'recurrent') and (self.encoder.bidirectional):
+        if (self.encoder.architecture == 'LSTM') and (self.encoder.bidirectional):
             #Independently project both directions for h, and both directions for c:
-            N = self.encoder.n_layers * self.encoder.d_hidden
+            N = self.encoder.n_layers_encoder_encoder * self.encoder.d_hidden
             self.bidi_project__h = nn.Linear(2*N, N)
             self.bidi_project__c = nn.Linear(2*N, N)
             self.nonlin__h = nn.ELU()
@@ -51,7 +53,7 @@ class RecurrentEncoderDecoder(nn.Module):
         # Using input X is shape: (batch x length x [F + M]) to be in batch_first LSTM format
         # future_features is (batch x length x F)
         # Y_teacher is (batch x length x M), is only used when using teacher forcing
-        
+        print(kwargs)
         horizon_span = kwargs['horizon_span']
         teacher_forcing = kwargs['teacher_forcing']
         teacher_forcing_prob = kwargs['teacher_forcing_prob']
@@ -60,27 +62,28 @@ class RecurrentEncoderDecoder(nn.Module):
         
         # Use last h from encoder as deocder initial hidden state
         h, c = self.encoder(X)
-        
+
+
         #If bidirectional encoder, concat the forward and backward directions,
         #and use small feedforward NN and project back to hidden size:
-        if self.encoder.bidirectional:
+        if (self.encoder.architecture=='LSTM') and (self.encoder.bidirectional):
             #Concat the forward and backward directions for hidden state vectors, h,
             #and pass through small feedforward network to project back to single hidden size:
-            h = h.view(self.encoder.n_layers, 2, batchsize, self.encoder.d_hidden)
+            h = h.view(self.encoder.n_layers_encoder, 2, batchsize, self.encoder.d_hidden)
             h = torch.cat((h[:,0,:,:], h[:,1,:,:]), dim=2).transpose(0,1)
             h = h.reshape((batchsize, -1)) #flatten layers dimension with the (directions x hidden) dim
             h = self.bidi_project__h(h)
             h = self.nonlin__h(h)
-            h = h.reshape((batchsize, self.encoder.n_layers, self.encoder.d_hidden))
+            h = h.reshape((batchsize, self.encoder.n_layers_encoder, self.encoder.d_hidden))
             h = h.transpose(0,1)
             
             #And do exactly the same for the cell memory vector c:
-            c = c.view(self.encoder.n_layers, 2, batchsize, self.encoder.d_hidden)
+            c = c.view(self.encoder.n_layers_encoder, 2, batchsize, self.encoder.d_hidden)
             c = torch.cat((c[:,0,:,:], c[:,1,:,:]), dim=2).transpose(0,1)
             c = c.reshape((batchsize, -1)) #flatten layers dimension with the (directions x hidden) dim
             c = self.bidi_project__h(c)
             c = self.nonlin__h(c)
-            c = c.reshape((batchsize, self.encoder.n_layers, self.encoder.d_hidden))
+            c = c.reshape((batchsize, self.encoder.n_layers_encoder, self.encoder.d_hidden))
             c = c.transpose(0,1)
             
             #h and c are now [n_layers x bacthsize x d_hidden],
@@ -104,27 +107,27 @@ class Encoder_recurrent(nn.Module):
     The Encoder module. For now just uses a basic multilayer LSTM.
     **some assumptions on same dimensions for now, and univariate ts forecasting task
     """
-    def __init__(self, architecture, d_input, d_hidden, n_layers, bidirectional, p_dropout_encoder):
+    def __init__(self, architecture, d_input, d_hidden, n_layers_encoder, bidirectional, p_dropout_encoder):
         super().__init__()
         # Params
         self.architecture = architecture
         self.d_input = d_input
         self.d_hidden = d_hidden
-        self.n_layers = n_layers
+        self.n_layers_encoder = n_layers_encoder
         self.bidirectional = bidirectional
         # Layers
         #batch_first – If True, then the input and output tensors are provided as (batch, seq, feature).
-        self.recurrence = nn.LSTM(d_input, d_hidden, n_layers, batch_first=True, bidirectional=self.bidirectional, dropout=p_dropout_encoder)
+        self.recurrence = nn.LSTM(d_input, d_hidden, n_layers_encoder, batch_first=True, bidirectional=self.bidirectional, dropout=p_dropout_encoder)
     def forward(self, X):
         out, (h, c) = self.recurrence(X)
         #for now without attention don't need to return out
-        return h, c    
+        return h, c
     
     
     
     
     
-class Encoder__convolutional(nn.Module):
+class Encoder_convolutional(nn.Module):
     """
     An encoder based on a convolutional arhcitecture.
     
@@ -146,16 +149,165 @@ class Encoder__convolutional(nn.Module):
         b) padding = kernel_size - 1
         c) then left and right trim the output by (kernel_size - 1)/2 before passing to next layer
     """
-    def __init__(self, input_size):
-        super(Encoder__convolutional, self).__init__()
+    def __init__(self, architecture, d_input, d_hidden, n_layers_encoder, n_layers_decoder, kernel_sizes, n_filters_each_kernel, reduce_ops_list):
+        super().__init__()
         #Params
+        self.architecture = architecture
+        # self.T_history = T_history #For this encoder, the history size is fixed
+        self.d_input = d_input
+        self.d_hidden = d_hidden
+        self.n_layers_encoder = n_layers_encoder
+        self.n_layers_decoder = n_layers_decoder
+        self.kernel_sizes = kernel_sizes        
+        self.n_filters_each_kernel = n_filters_each_kernel
+        self.N_heads = len(self.kernel_sizes)
         
-    def forward(self, x):
-        pass    
-    
-    
-    
-    
+        self.reduce_ops_list = reduce_ops_list
+        self.N_ops = len(self.reduce_ops_list)
+        
+        #Confirm kernel iszez and number of kernels matches; and kernel sizes are all positive odd ints
+        assert(self.N_heads==len(self.n_filters_each_kernel))
+        assert((i>0 and type(i)==int and i%2==1 for i in self.kernel_sizes))
+        
+        #Using 2D conv since [T x features]
+        self.convs = nn.ModuleList([nn.Conv2d(1, self.n_filters_each_kernel[i], (self.kernel_sizes[i], self.d_input)) for i in range(len(self.kernel_sizes))])
+        self.convs_reduce = nn.ModuleList([nn.Conv2d(self.n_filters_each_kernel[i], 1, (1, 1)) for i in range(len(self.kernel_sizes))])
+        
+        #FC to merge different branches of conv read heads:
+        # N_in_features = self.N_heads*self.d_input*self.T_history
+        # N_out_features = self.d_input*self.T_history
+        # self.merge_heads_fc = nn.Linear(N_in_features, N_out_features)
+        # print('N_heads', self.N_heads)
+        # print('N_in_features', N_in_features)
+        # print('N_out_features', N_out_features)
+        
+        self.merge_heads_conv = nn.Conv2d(4, 1, (1,1))
+        
+        # Final layers to make [batch x 1 x T_history x features] -> [batch x d_hidden]
+        # to pass into recurrent decoder as initial hidden states:
+        self.linear_out_h = nn.Linear(self.d_input*self.N_ops, self.d_hidden*self.n_layers_decoder)
+        self.linear_out_c = nn.Linear(self.d_input*self.N_ops, self.d_hidden*self.n_layers_decoder)
+        
+    def merge_heads(self, tensor_list):
+        """
+        Merge the outputs of the different attention heads (sets of different 
+        size kernel filters).
+        
+        They are merged into a single output to feed into the next layer
+        
+        **E.g. below, just doing basic fully connected layer with nonlinearity
+        to reduce the [batch x N_heads x F x T] to [batch x 1 x F x T]:
+        """
+        x = torch.cat([i for i in tensor_list], dim=1)
+        x = self.merge_heads_conv(x)
+        x = F.elu(x)
+        # self.merge_heads_fc
+        return x
+        
+
+    def pad_conv_slice_res(self, index, x_0):
+        """
+        For a given kernel_size (attention head):
+            - pad left and right side of input by (kernel_size - 1)
+            - conv layer
+            - trim by removing (kernel_size - 1)/2 from both sides to make
+              same output dimension as input dimension
+            - merge all filters into 1
+            - non-linearities / normalization, etc.
+            - residual connection
+            
+        x_0 - input tensor is [batch x T_history x features]
+        """
+        
+        # print('padddd conv slice ----------')
+        kernel_size = self.kernel_sizes[index]
+        # n_filters = self.n_filters_each_kernel[index]
+        # print('index', index)
+        # print('x_0.shape', x_0.shape)
+        # print('kernel_size', kernel_size)
+        # print('n_filters', n_filters)
+        
+        #Pad input:
+        padsize = kernel_size - 1
+        pad_tuple = (0,0,padsize,padsize)
+        x = F.pad(x_0, pad_tuple, "constant", 0)
+        
+
+        #Conv
+        # print('x.shape after pad', x.shape)
+        # print(self.convs[index])
+        x = self.convs[index](x)
+        # print('x.shape after conv', x.shape)
+        # print(x[0,0,:,:])
+        
+        
+        #Trim
+        ind = int((kernel_size-1)/2)
+        # print(ind)
+        x = x[:,:,ind:-ind,:]
+        # print(x)
+        # print('x.shape after trim', x.shape)    
+        # print(x[0,0,:,:])
+        
+        
+        #Merge
+        x = self.convs_reduce[index](x)
+        # print('x.shape after reduce', x.shape) 
+        #Repeat tensor along features dimension to be original shape ()
+        x = x.repeat(1,1,1,self.d_input)
+        # print('x.shape after repeat', x.shape) 
+        
+        #Residual connection:
+        x += x_0
+        return x
+
+
+    def reduce_along_time(self, x, reduce_ops_list):
+        """
+        At the end of the conv encoder, need to reduce along T_history axis
+        to be applicable to arbitrary sized inputs.
+        
+        E.g. take max, min, mean, etc. to reduce variable sized axis to fixed
+        size representation
+        
+        x input is [batch x 1 x T_history x features]
+        is reduced to
+        [batch x (features*ops)]
+        """
+        v = []
+        for op in reduce_ops_list:
+            v.append(op(x,axis=2))
+        v = torch.cat(v, dim=2)
+        v = v.squeeze()
+        return v
+        
+        
+
+    def forward(self, X):
+        
+        #Put into format [batch x channels x T_history x features]
+        X = X.unsqueeze(1)
+        batchsize = X.shape[0]
+        
+        #Just doing glimpses with shared weights, i.e. for each layer, the 
+        #parameters for the branch corresponding to a given kernel_size are reused
+        #(shared across layers):
+        for LL in range(self.n_layers_encoder):
+            outputs_this_layer = []
+            for HH in range(self.N_heads):
+                outputs_this_layer.append(self.pad_conv_slice_res(HH, X))
+            X = self.merge_heads(outputs_this_layer)
+
+        X = self.reduce_along_time(X, self.reduce_ops_list)# is now [batch x (features*ops)]
+        h = F.elu(self.linear_out_h(X))
+        c = F.elu(self.linear_out_c(X))
+        
+        # Reshape to be decoder input format for h, c:
+        # [n_layers_decoder x batch x ]
+        h = h.reshape(batchsize, self.d_hidden, self.n_layers_decoder).permute([2,0,1])
+        c = c.reshape(batchsize, self.d_hidden, self.n_layers_decoder).permute([2,0,1])
+        
+        return h, c
     
     
     
@@ -179,7 +331,7 @@ class Decoder_recurrent(nn.Module):
     
     d_hidden - int. Hidden size dimension of h and c of LSTM
     
-    n_layers - int. Number of layers
+    n_layers_decoder - int. Number of layers
     
     
     Derived params:
@@ -191,7 +343,7 @@ class Decoder_recurrent(nn.Module):
     
     
     """
-    def __init__(self, architecture, attention_type, M, Q, d_future_features, d_hidden, n_layers, p_dropout_decoder):
+    def __init__(self, architecture, attention_type, M, Q, d_future_features, d_hidden, n_layers_decoder, p_dropout_decoder):
         super().__init__()
         # Params
         self.architecture = architecture
@@ -201,12 +353,12 @@ class Decoder_recurrent(nn.Module):
         self.M = M #if univariate is 1, in general is M for multivariate output distribution
         self.Q = Q #is number of quantiles to predict (assumed same for each of the M variables [but subsets can be masked in loss function])
         self.d_hidden = d_hidden
-        self.n_layers = n_layers
+        self.n_layers_decoder = n_layers_decoder
         #Derived params:
         self.d_output = self.M * self.Q
         self.d_input = self.d_future_features + self.M
         # Layers
-        self.recurrence = nn.LSTM(self.d_input, self.d_hidden, self.n_layers, batch_first=True, dropout=p_dropout_decoder)
+        self.recurrence = nn.LSTM(self.d_input, self.d_hidden, self.n_layers_decoder, batch_first=True, dropout=p_dropout_decoder)
         self.linear_out_predict = nn.Linear(self.d_hidden, self.d_output)
         #self.linear_out_next_in = nn.Linear(self.d_output, self.M) #to project all quantile information back into size of point estimates, for next timestep
     
