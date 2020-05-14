@@ -5,7 +5,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from numpy import inf
+
 
 class RecurrentEncoderDecoder(nn.Module):
     """
@@ -36,11 +36,14 @@ class RecurrentEncoderDecoder(nn.Module):
             
         if decoder_params['architecture']=='LSTM':
             self.decoder = Decoder_recurrent(**self.decoder_params)
-        # self.connector = nn.Linear(self.decoder.ddddddddddddddddddddd, self.decoder.d_input)
+        elif decoder_params['architecture']=='MQRNN':
+            self.decoder_params['d_encoder_out'] = self.encoder_params['n_layers_encoder']*self.encoder_params['d_hidden']
+            self.decoder = Decoder_MQRNN(**self.decoder_params)        
+        
         
         if (self.encoder.architecture == 'LSTM') and (self.encoder.bidirectional):
             #Independently project both directions for h, and both directions for c:
-            N = self.encoder.n_layers_encoder_encoder * self.encoder.d_hidden
+            N = self.encoder.n_layers_encoder * self.encoder.d_hidden
             self.bidi_project__h = nn.Linear(2*N, N)
             self.bidi_project__c = nn.Linear(2*N, N)
             self.nonlin__h = nn.ELU()
@@ -62,7 +65,7 @@ class RecurrentEncoderDecoder(nn.Module):
         
         # Use last h from encoder as deocder initial hidden state
         h, c = self.encoder(X)
-
+        # print(h.shape, c.shape)
 
         #If bidirectional encoder, concat the forward and backward directions,
         #and use small feedforward NN and project back to hidden size:
@@ -125,8 +128,6 @@ class Encoder_recurrent(nn.Module):
     
     
     
-    
-    
 class Encoder_convolutional(nn.Module):
     """
     An encoder based on a convolutional arhcitecture.
@@ -149,13 +150,12 @@ class Encoder_convolutional(nn.Module):
         b) padding = kernel_size - 1
         c) then left and right trim the output by (kernel_size - 1)/2 before passing to next layer
     """
-    def __init__(self, architecture, d_input, d_hidden, n_layers_encoder, n_layers_decoder, kernel_sizes, n_filters_each_kernel, reduce_ops_list):
+    def __init__(self, architecture, d_input, d_hidden_decoder, n_layers_encoder, n_layers_decoder, kernel_sizes, n_filters_each_kernel, reduce_ops_list):
         super().__init__()
         #Params
         self.architecture = architecture
-        # self.T_history = T_history #For this encoder, the history size is fixed
         self.d_input = d_input
-        self.d_hidden = d_hidden
+        self.d_hidden_decoder = d_hidden_decoder #assuming for now using recurrent style deocder, need to reshape this encoder's outputs to feed in as h, c to decoder
         self.n_layers_encoder = n_layers_encoder
         self.n_layers_decoder = n_layers_decoder
         self.kernel_sizes = kernel_sizes        
@@ -183,10 +183,10 @@ class Encoder_convolutional(nn.Module):
         
         self.merge_heads_conv = nn.Conv2d(4, 1, (1,1))
         
-        # Final layers to make [batch x 1 x T_history x features] -> [batch x d_hidden]
+        # Final layers to make [batch x 1 x T_history x features] -> [batch x d_hidden_decoder]
         # to pass into recurrent decoder as initial hidden states:
-        self.linear_out_h = nn.Linear(self.d_input*self.N_ops, self.d_hidden*self.n_layers_decoder)
-        self.linear_out_c = nn.Linear(self.d_input*self.N_ops, self.d_hidden*self.n_layers_decoder)
+        self.linear_out_h = nn.Linear(self.d_input*self.N_ops, self.d_hidden_decoder*self.n_layers_decoder)
+        self.linear_out_c = nn.Linear(self.d_input*self.N_ops, self.d_hidden_decoder*self.n_layers_decoder)
         
     def merge_heads(self, tensor_list):
         """
@@ -304,10 +304,13 @@ class Encoder_convolutional(nn.Module):
         
         # Reshape to be decoder input format for h, c:
         # [n_layers_decoder x batch x ]
-        h = h.reshape(batchsize, self.d_hidden, self.n_layers_decoder).permute([2,0,1])
-        c = c.reshape(batchsize, self.d_hidden, self.n_layers_decoder).permute([2,0,1])
+        h = h.reshape(batchsize, self.d_hidden_decoder, self.n_layers_decoder).permute([2,0,1])
+        c = c.reshape(batchsize, self.d_hidden_decoder, self.n_layers_decoder).permute([2,0,1])
         
         return h, c
+    
+    
+    
     
     
     
@@ -404,3 +407,113 @@ class Decoder_recurrent(nn.Module):
         all_outputs = all_outputs.reshape((batchsize, horizon_span, self.M, self.Q))
         
         return all_outputs
+    
+    
+    
+    
+    
+class Decoder_MQRNN(nn.Module):
+    """
+    Decoder based on the MQ-RNN decoder from the Amazon paper:
+        A Multi-Horizon Quantile Recurrent Forecaster
+        Ruofeng Wen, Kari Torkkola, Balakrishnan Narayanaswamy, Dhruv Madeka
+        https://arxiv.org/abs/1711.11053
+    """
+    def __init__(self, architecture, attention_type, horizon_max, M, Q, d_encoder_out, d_global, d_local, d_future_features):
+        super().__init__()
+        
+        # Params
+        self.architecture = architecture
+        self.attention_type = attention_type
+        self.horizon_max = horizon_max
+        
+        #future_features is [batch x d_future_features], where
+        self.d_future_features = d_future_features
+        self.M = M #if univariate is 1, in general is M for multivariate output distribution
+        self.Q = Q #is number of quantiles to predict (assumed same for each of the M variables [but subsets can be masked in loss function])
+        
+        self.d_encoder_out = d_encoder_out #is n_layers_encoder*d_hidden if using LSTM encoder or conv encoder [if bidirectional, will have already been projected down to this size]
+        self.d_global = d_global
+        self.d_local = d_local
+        
+        #Derived params:
+        self.d_output = self.M * self.Q
+        
+        # Layers
+        # Stage 1 MLP:
+        self.USE_C = True #Also concat the internal c cell memory of last encoder timestep, to the last encoder timestep vector h
+        H_C_FACTOR = 2 if self.USE_C else 1
+        self.d_in_1 = self.d_future_features*self.horizon_max + H_C_FACTOR*self.d_encoder_out
+        self.d_out_1 = self.horizon_max*self.d_local + self.d_global
+        self.FF1 = nn.Linear(self.d_in_1, self.d_out_1)
+        # Stage 2 MLP:
+        self.d_in_2 = self.d_future_features + self.d_local + self.d_global
+        self.FF2 = nn.Linear(self.d_in_2, self.d_output)
+    
+    
+    def forward(self, batchsize, Y_teacher, inp_y, h, c, future_features, horizon_span, teacher_forcing, teacher_forcing_prob):
+        """
+        This kind of direct forecaster does NOT recursively make predictions.
+        I makes an all-at-once direct multistep forecast.
+        So it doesn't use any kind of teacher forcing.
+        
+        
+        h, c are [n_layers_encoder x batch x d_hidden]
+        
+        future_features is [batch x horizon_span x F],
+        where F is dimension of features which are known for future (e.g. timestamp related)
+        """
+        
+        batch = future_features.shape[0]
+        
+        h = h.permute([1,0,2]).reshape(batch, self.d_encoder_out)
+        c = c.permute([1,0,2]).reshape(batch, self.d_encoder_out)
+        future_features = future_features.reshape(batch, self.horizon_max*self.d_future_features)
+
+
+        # Stage 1: small feedforward network
+        # If using c as well as h:
+        # (e.g. could use just h)
+        if self.USE_C:
+            x = torch.cat([h, c, future_features],dim=1)
+        else:
+            x = torch.cat([h, future_features],dim=1)
+        x = self.FF1(x)
+        x = F.elu(x)
+        # print('x.shape', x.shape)
+        # print('self.d_in_1', self.d_in_1)
+        # print('self.d_out_1', self.d_out_1)
+        # print('self.d_in_2', self.d_in_2)
+        
+        
+        # Stage 2: small feedforward network, applied to each future timestep:
+        # in: [global, local_t, features_t] -> out [y_t (including quantiles)] 
+        outputs = []
+        future_features = future_features.reshape(batch, self.horizon_max, self.d_future_features)
+        global_context = x[:, :self.d_global]
+        # Predict horizon_max timesteps into the future:
+        for t in range(self.horizon_max):
+            start = self.d_global + t*self.d_local
+            end = self.d_global + (t+1)*self.d_local
+            # print(self.d_local,self.d_global,start,end)
+            context_t = x[:, start:end]
+            # print('context_t.shape', context_t.shape)
+            features_t = future_features[:, t, :]
+            # print('features_t.shape', features_t.shape)
+            in_t = torch.cat([global_context, context_t, features_t],dim=1)
+            # print('in_t.shape', in_t.shape)
+            out_t = torch.unsqueeze(self.FF2(in_t),dim=1)
+            outputs.append(out_t)
+
+        # Stack the outputs along the timestep axis into a tensor with shape:
+        # [batchsize x length x output]
+        all_outputs = torch.cat([i for i in outputs], dim=1)
+
+        # Multivariate and quantiles:
+        # Standardize the shape to be:
+        # [batchsize x T x M x Q]
+        # e.g. univariate point estimates are then just [batch x T x 1 x 1]
+        # multivariate point estimates are [batch x T x M x 1]
+        all_outputs = all_outputs.reshape((batchsize, horizon_span, self.M, self.Q))
+        
+        return all_outputs    

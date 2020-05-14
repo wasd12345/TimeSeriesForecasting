@@ -77,8 +77,6 @@ $ python train.py
 
 - **include quantile interval figs**
 
-- **include MQ-RNN implementation**
-
 - **History/Horizon Analysis**
 
 - **hidden state regularizers**

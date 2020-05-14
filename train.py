@@ -67,7 +67,7 @@ VALIDATION_METRICS_TRACKED = {'mse_loss':(F.mse_loss, [0], {}),
                             }
 
 # Model params
-MODEL = 'ConvEncoderDecoder'#'ConvEncoderDecoder' #'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models, to do direct comparison      MODEL_LIST = ...
+MODEL = 'MQRNN' #'MQRNN'#'ConvEncoderDecoder' #'RecurrentEncoderDecoder' #'DummyMLP' ########'dsrnn' #or try all models, to do direct comparison      MODEL_LIST = ...
 #!!!!!!! vs. MODEL_LIST = ['dsrnn', 'Cho',...] and then track stats for each model, at same time, using individual optimizers but exact same training / val batches
 #!!!!!!! ENSEMBLE_N_MODELS = 1 #Number of models to average together in bagged ensemble
 #!!!!!!! ENSEMBLE_N_CHECKPOINTS = 1 #Number of checkpoints over which to do weight averaging [EMA weighting]
@@ -146,10 +146,16 @@ elif TASK == 'tsfake':
 else:
     raise Exception(f'"{TASK}" TASK not implemented yet')
 #Regardless of dataset, should have these variables to track them:
-INPUT_SIZE = train_set.n_input_features #Feature dimension of input is just 1, since we just have a scalar time series for this fake example data
+INPUT_SIZE = train_set.n_input_features #Feature dimension of input
 D_FUTURE_FEATURES = train_set.n_external_features #Number of future features. E.g. timestamp related features on horizon timesteps
 N_MULTIVARIATE = train_set.n_multivariate
 assert(INPUT_SIZE == N_MULTIVARIATE + D_FUTURE_FEATURES)
+#!!!!!!!!!!!!!!!!!!!! get number of quantiles
+#if 0 in QUANTILES_INDS it means one of the quantiles was used as point estimate
+#otherwise there was separately another index used as the point estimate
+#*** 0 is always assumed as point estimate, i.e. we ALWAYS make a point estimate!!!!!!!!!
+Q_QUANTILES = len(QUANTILES_INDS) if (0 in QUANTILES_INDS) else len(QUANTILES_INDS)+1
+
 
        
 #Model (for now assuming you must choose a single model) !!!!!!!!
@@ -158,11 +164,6 @@ if MODEL == 'DummyMLP':
 elif MODEL == 'RecurrentEncoderDecoder':
     N_LAYERS = 2#3
     D_HIDDEN = 32
-    #!!!!!!!!!!!!!!!!!!!! get number of quantiles
-    #if 0 in QUANTILES_INDS it means one of the quantiles was used as point estimate
-    #otherwise there was separately another index used as the point estimate
-    #*** 0 is always assumed as point estimate, i.e. we ALWAYS make a point estimate!!!!!!!!!
-    Q_QUANTILES = len(QUANTILES_INDS) if (0 in QUANTILES_INDS) else len(QUANTILES_INDS)+1
     BIDIRECTIONAL_ENC = False #False #True #Use bidirectional encoder
     P_DROPOUT_ENCODER = 0.#.25
     P_DROPOUT_DECODER = 0.#.25
@@ -194,17 +195,16 @@ elif MODEL == 'ConvEncoderDecoder':
     N_LAYERS_DECODER = 2
     D_HIDDEN = 32
     REDUCE_OPS_LIST = [torch.mean, torch.std]#, torch.max, torch.min, ]
-    Q_QUANTILES = len(QUANTILES_INDS) if (0 in QUANTILES_INDS) else len(QUANTILES_INDS)+1
     KERNEL_SIZES = [3,5,7,15] #List of sizes of convolution kernels. Use POSITIVE ODD INTEGERS.
     N_FILTERS_EACH_KERNEL = [10,10,20,25] #For each size kernel in KERNEL_SIZES, the number of filters to use
-    P_DROPOUT_DECODER = 0.#.25
+    P_DROPOUT_DECODER = .25
     enc_dec_params = {'M':N_MULTIVARIATE,
                       'Q':Q_QUANTILES,
                       'encoder_params':{'architecture':'conv',
                                         # 'T_history':T_HISTORY,
                                         'd_input':INPUT_SIZE,
                                         'n_layers_encoder':N_LAYERS_ENCODER,
-                                        'd_hidden':D_HIDDEN,
+                                        'd_hidden_decoder':D_HIDDEN,
                                         'kernel_sizes':KERNEL_SIZES,
                                         'n_filters_each_kernel':N_FILTERS_EACH_KERNEL,
                                         'reduce_ops_list':REDUCE_OPS_LIST,
@@ -222,7 +222,36 @@ elif MODEL == 'ConvEncoderDecoder':
                         'teacher_forcing':True,
                         'teacher_forcing_prob':.25
                         }    
-    
+elif MODEL == 'MQRNN':
+    D_HIDDEN = 32
+    N_LAYERS_ENCODER = 3
+    BIDIRECTIONAL_ENC = True #False #True #Use bidirectional encoder
+    P_DROPOUT_ENCODER = 0.#.25
+    T_HORIZON_MAX = 40
+    D_GLOBAL = 32
+    D_LOCAL = 16
+    enc_dec_params = {'M':N_MULTIVARIATE,
+                      'Q':Q_QUANTILES,
+                      'encoder_params':{'architecture':'LSTM',
+                                        'd_input':INPUT_SIZE,
+                                        'n_layers_encoder':N_LAYERS_ENCODER,
+                                        'd_hidden':D_HIDDEN,
+                                        'bidirectional':BIDIRECTIONAL_ENC,
+                                        'p_dropout_encoder':P_DROPOUT_ENCODER,
+                                        },
+                      'decoder_params':{'architecture':'MQRNN',
+                                        'horizon_max':T_HORIZON_MAX,
+                                        'd_global':D_GLOBAL,
+                                        'd_local':D_LOCAL,
+                                        'd_future_features':D_FUTURE_FEATURES,
+                                        'attention_type':None
+                                        }
+                      }
+    model = EncDec.RecurrentEncoderDecoder(**enc_dec_params).to(device)  
+    model_run_params = {'horizon_span':train_set.horizon_span,
+                        'teacher_forcing':False,
+                        'teacher_forcing_prob':None
+                        }      
     
     
 # elif MODEL == 'dsrnn':
@@ -299,11 +328,17 @@ for epoch in range(MAX_EPOCHS):
     #Learning rate scheduler adjustment
     #scheduler.step()
 
-    #Potentially change batchsize, other things, by reinitializing DataLoader:
-    #if also want to randomize over history and horizon sizes during training, then re-init Dataset each time
-    #train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, history_span, horizon_span, history_start)
-    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)#, num_workers=NUM_WORKERS)
-    #!!!!!!!!!! put log transform / box-cox etc. in Dataset transform method 
+    # per EPOCH changes, like diff history and horizon sizes, batch sizes; then update for this EPOCH:
+    next_history = torch.randint(HISTORY_SIZE_TRAINING_MIN_MAX[0], HISTORY_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
+    # if MODEL requires fixed input history (only DummyMLP model):
+    #     next_history = ...
+    # and/or if MODEL is fixed horizon size:
+    next_horizon = torch.randint(HORIZON_SIZE_TRAINING_MIN_MAX[0], HORIZON_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
+    if MODEL=='MQRNN':
+        next_horizon = model.decoder_params['horizon_max']
+    next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
+    train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, train_set.n_multivariate, train_set.n_external_features, next_history, next_horizon, next_start)
+    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)#, num_workers=NUM_WORKERS)    
 
     for bb, sample in enumerate(train_dl):
         print(f'training batch {bb}')
@@ -358,7 +393,14 @@ for epoch in range(MAX_EPOCHS):
             model_run_params = {'horizon_span':train_set.horizon_span,
                                 'teacher_forcing':True,
                                 'teacher_forcing_prob':.25
-                                }            
+                                }
+        # MQ-RNN uses fixed size horizon T_HORIZON_MAX, and makes direct forecast so does not use teacher forcing:
+        elif (MODEL=='MQRNN'):
+            model_run_params = {'horizon_span':train_set.horizon_span,
+                                'teacher_forcing':False,
+                                'teacher_forcing_prob':None
+                                }
+            
         Y_pred = model(X, future_features, Y_teacher, **model_run_params)
         # print('Y_pred.shape', Y_pred.shape)
     
@@ -440,13 +482,7 @@ for epoch in range(MAX_EPOCHS):
         print('\n'*2)
         
 
-    #To do per EPOCH changes, like diff history and horizon sizes, update for the next EPOCH:
-    next_history = torch.randint(HISTORY_SIZE_TRAINING_MIN_MAX[0], HISTORY_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
-    next_horizon = torch.randint(HORIZON_SIZE_TRAINING_MIN_MAX[0], HORIZON_SIZE_TRAINING_MIN_MAX[1], [1], dtype=int).item()
-    next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
-    #!!!!!!!!!!! not updating properly #train_set.update_timespans(history_span=next_history, horizon_span=next_horizon, history_start=next_start)
-    train_set = tsfake_task.TSFakeDataset(TRAIN_PATH, train_set.n_multivariate, train_set.n_external_features, next_history, next_horizon, next_start)
-    train_dl = DataLoader(train_set, batch_size=BS_0__train, shuffle=True)#, num_workers=NUM_WORKERS)
+
 
     t_train_end = time.perf_counter()
     elapsed_train_time = t_train_end - t_train_start
@@ -465,6 +501,21 @@ for epoch in range(MAX_EPOCHS):
     t_val_start = time.perf_counter()
     model.eval()
     val_batchsize_this_epoch = BS_0__val #For now just use fixed batchsize but could adjust dynamically as necessary
+
+    #To do per batch changes, like diff history and horizon sizes, update for the next batch:
+    #however this will greatly increase variance over validation metrics.
+    #better to do a full range of history/horizon sizes, at each valifation epoch. !!!!!!!!!!!!!!!!!
+    #or if the particular application has a single horizon size of interest then obviously use that....
+    next_history = torch.randint(HISTORY_SIZE_VALIDATION_MIN_MAX[0], HISTORY_SIZE_VALIDATION_MIN_MAX[1], [1], dtype=int).item()
+    # if MODEL requires fixed input history (only DummyMLP model):
+    #     next_history = ...
+    # and/or if MODEL is fixed horizon size:
+    next_horizon = torch.randint(HORIZON_SIZE_VALIDATION_MIN_MAX[0], HORIZON_SIZE_VALIDATION_MIN_MAX[1], [1], dtype=int).item()
+    if MODEL=='MQRNN':
+        next_horizon = model.decoder_params['horizon_max']    
+    next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
+    val_set = tsfake_task.TSFakeDataset(VAL_PATH, val_set.n_multivariate, val_set.n_external_features, next_history, next_horizon, next_start)
+    val_dl = DataLoader(val_set, batch_size=BS_0__val, shuffle=True)
     
     #with torch.set_grad_enabled(False):
     with torch.no_grad():
@@ -501,7 +552,11 @@ for epoch in range(MAX_EPOCHS):
                                     'teacher_forcing':False,
                                     'teacher_forcing_prob':None
                                     }            
-            
+            elif (MODEL=='MQRNN'):
+                model_run_params = {'horizon_span':val_set.horizon_span,
+                                    'teacher_forcing':False,
+                                    'teacher_forcing_prob':None
+                                    }            
             Y_gt = torch.unsqueeze(Y_gt, 3)
             Y_pred = model(X, future_features, Y_gt, **model_run_params)
             # Invert the transformation process on Y_pred to get the final predictions:
@@ -553,16 +608,6 @@ for epoch in range(MAX_EPOCHS):
             print()            
             
 
-    #To do per batch changes, like diff history and horizon sizes, update for the next batch:
-    #however this will greatly increase variance over validation metrics.
-    #better to do a full range of history/horizon sizes, at each valifation epoch. !!!!!!!!!!!!!!!!!
-    #or if the particular application has a single horizon size of interest then obviously use that....
-    next_history = torch.randint(HISTORY_SIZE_VALIDATION_MIN_MAX[0], HISTORY_SIZE_VALIDATION_MIN_MAX[1], [1], dtype=int).item()
-    next_horizon = torch.randint(HORIZON_SIZE_VALIDATION_MIN_MAX[0], HORIZON_SIZE_VALIDATION_MIN_MAX[1], [1], dtype=int).item()
-    next_start = torch.randint(0, 10, [1], dtype=int).item() #!!!!!!!!this number is constraind by training size, history size, horizon size. Put in the daatet class to derive this valid range....
-    val_set = tsfake_task.TSFakeDataset(VAL_PATH, val_set.n_multivariate, val_set.n_external_features, next_history, next_horizon, next_start)
-    val_dl = DataLoader(val_set, batch_size=BS_0__val, shuffle=True)
-            
     t_val_end = time.perf_counter()
     elapsed_val_time = t_val_end - t_val_start    
     print(f'elapsed_val_time = {elapsed_val_time}')
